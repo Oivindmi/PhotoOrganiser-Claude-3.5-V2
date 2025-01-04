@@ -167,8 +167,52 @@ class TimeSynchronizer(QObject):
             logger.info(
                 f"Starting update_group_times for base_group_id: {base_group_id}, compare_group_id: {compare_group_id}")
 
-            if choice == 'left':
-                # Use left (base) time as reference
+            base_combined_group = self.get_combined_group_for_id(base_group_id)
+            logger.info(f"Base combined group: {base_combined_group}")
+
+            if choice == 'right':
+                # Using right (compare) time as reference
+                if right_field == "Updated Time":
+                    compare_time = compare_file.correct_time
+                else:
+                    compare_metadata = self._ensure_dict(compare_file.extra_metadata)
+                    compare_time = self._find_datetime_in_metadata(compare_metadata, right_field)
+
+                if compare_time:
+                    logger.info(f"Using compare time as reference: {compare_time}")
+                    # Set compare group without adjustment
+                    self.update_group(session, compare_group_id, right_field, timedelta())
+
+                    # Calculate time delta for base files
+                    if left_field == "Updated Time":
+                        left_base_time = base_file.correct_time
+                    else:
+                        left_metadata = self._ensure_dict(base_file.extra_metadata)
+                        left_base_time = self._find_datetime_in_metadata(left_metadata, left_field)
+
+                    if left_base_time:
+                        time_delta = compare_time - left_base_time
+                        logger.info(f"Calculated time delta: {time_delta}")
+
+                        # Update all files in the combined group with the same delta
+                        for group_id in base_combined_group:
+                            logger.info(f"Updating group {group_id} with time delta")
+                            files = session.query(self.db_manager.FileMetadata).filter_by(group_id=group_id).all()
+                            for file in files:
+                                if file.original_time_field and file.correct_time:
+                                    # Update existing correct_time
+                                    file.correct_time += time_delta
+                                    logger.info(f"Updated existing time for {file.file_path} to {file.correct_time}")
+                                else:
+                                    # For files not yet evaluated, set initial time using same field as base
+                                    file_metadata = self._ensure_dict(file.extra_metadata)
+                                    original_time = self._find_datetime_in_metadata(file_metadata, left_field)
+                                    if original_time:
+                                        file.correct_time = original_time + time_delta
+                                        file.original_time_field = left_field
+                                        logger.info(f"Set initial time for {file.file_path} to {file.correct_time}")
+            else:
+                # Using left (base) time as reference
                 if left_field == "Updated Time":
                     base_time = base_file.correct_time
                 else:
@@ -176,59 +220,37 @@ class TimeSynchronizer(QObject):
                     base_time = self._find_datetime_in_metadata(base_metadata, left_field)
 
                 if base_time:
-                    logger.info(f"Using left (base) time as reference: {base_time}")
-                    # Set base group's field without time adjustment
-                    self.update_group(session, base_group_id, left_field, timedelta())
+                    logger.info(f"Using base time as reference: {base_time}")
+                    # Keep base times as they are
+                    time_delta = timedelta()
+                    for group_id in base_combined_group:
+                        logger.info(f"Maintaining existing times for group {group_id}")
+                        self.update_group(session, group_id, left_field, time_delta)
 
+                    # Calculate and apply delta to compare group
                     if right_field == "Updated Time":
-                        compare_time = compare_file.correct_time or \
-                                       self._find_datetime_in_metadata(self._ensure_dict(compare_file.extra_metadata),
-                                                                       compare_file.original_time_field)
+                        compare_time = compare_file.correct_time
                     else:
-                        compare_time = self._find_datetime_in_metadata(self._ensure_dict(compare_file.extra_metadata),
-                                                                       right_field)
+                        compare_metadata = self._ensure_dict(compare_file.extra_metadata)
+                        compare_time = self._find_datetime_in_metadata(compare_metadata, right_field)
 
                     if compare_time:
                         time_delta = base_time - compare_time
-                        logger.info(f"Calculated time delta: {time_delta}")
+                        logger.info(f"Calculated time delta for compare group: {time_delta}")
                         self.update_group(session, compare_group_id, right_field, time_delta)
 
-            else:  # choice == 'right'
-                # Use right (compare) time as reference
-                if right_field == "Updated Time":
-                    compare_time = compare_file.correct_time or \
-                                   self._find_datetime_in_metadata(self._ensure_dict(compare_file.extra_metadata),
-                                                                   compare_file.original_time_field)
-                else:
-                    compare_metadata = self._ensure_dict(compare_file.extra_metadata)
-                    compare_time = self._find_datetime_in_metadata(compare_metadata, right_field)
-
-                if compare_time:
-                    logger.info(f"Using right (compare) time as reference: {compare_time}")
-                    # Set compare group's field without time adjustment
-                    self.update_group(session, compare_group_id, right_field, timedelta())
-
-                    if left_field == "Updated Time":
-                        base_time = base_file.correct_time
-                    else:
-                        base_time = self._find_datetime_in_metadata(self._ensure_dict(base_file.extra_metadata),
-                                                                    left_field)
-
-                    if base_time:
-                        time_delta = compare_time - base_time
-                        logger.info(f"Calculated time delta: {time_delta}")
-                        self.update_group(session, base_group_id, left_field, time_delta)
-
-            # Store chosen fields and merge groups
-            self.evaluated_groups.add(base_group_id)
+            # Mark all groups as evaluated and merge them
             self.evaluated_groups.add(compare_group_id)
+            for group_id in base_combined_group:
+                self.evaluated_groups.add(group_id)
+
+            # Merge the groups
             self.merge_groups(base_group_id, compare_group_id)
 
             session.commit()
             logger.info("Committed changes to database")
             self.database_updated.emit()
             logger.info("Emitted database_updated signal")
-
         except Exception as e:
             logger.error(f"Error in update_group_times: {str(e)}")
             logger.error(traceback.format_exc())
@@ -241,22 +263,20 @@ class TimeSynchronizer(QObject):
             logger.info(f"Found {len(files)} files in group {group_id}")
 
             for file in files:
-                if chosen_field == "Updated Time":
-                    # Simply apply the time delta to the existing correct_time
-                    if file.correct_time:
-                        file.correct_time += time_delta
-                        logger.info(
-                            f"Updated correct_time with delta for {file.file_path}: new time = {file.correct_time}")
-                else:
-                    # Regular metadata field processing
-                    file_metadata = self._ensure_dict(file.extra_metadata)
-                    original_time = self._find_datetime_in_metadata(file_metadata, chosen_field)
+                file_metadata = self._ensure_dict(file.extra_metadata)
 
+                if chosen_field == "Updated Time" and file.correct_time:
+                    # Just apply the delta to the existing correct_time
+                    file.correct_time += time_delta
+                    logger.info(f"Updated correct_time with delta for {file.file_path}: new time = {file.correct_time}")
+                else:
+                    # Find the original time from metadata and apply delta
+                    original_time = self._find_datetime_in_metadata(file_metadata, chosen_field)
                     if original_time:
                         file.correct_time = original_time + time_delta
                         file.original_time_field = chosen_field
-                        logger.info(
-                            f"Setting correct_time for {file.file_path} to {file.correct_time}, original_time_field = {chosen_field}")
+                        logger.info(f"Setting correct_time for {file.file_path} to {file.correct_time}, "
+                                    f"original_time_field = {chosen_field}")
                     else:
                         logger.warning(f"Could not find original time for file {file.file_path}")
 
@@ -264,7 +284,7 @@ class TimeSynchronizer(QObject):
         except Exception as e:
             logger.error(f"Error in update_group: {str(e)}")
             logger.error(traceback.format_exc())
-            session.rollback()
+            raise
 
     def apply_time_delta(self, session, group_id, time_delta):
         files = session.query(self.db_manager.FileMetadata).filter_by(group_id=group_id).all()
@@ -273,13 +293,15 @@ class TimeSynchronizer(QObject):
                 file.correct_time += time_delta
                 logger.info(f"Applied time delta to file {file.file_path}: new correct_time = {file.correct_time}")
 
-    def find_best_matches_across_windows(self, session, base_group_id, compare_group_id, base_time_windows,
-                                         compare_time_windows):
-        # Get all files from combined base group
-        base_combined_group = self.get_combined_group_for_id(base_group_id)
+    def find_best_matches_across_windows(self, session, base_group_id, compare_group_id,
+                                         base_time_windows, compare_time_windows):
+        """Find matches between photos, considering combined groups"""
         all_matches = []
 
-        # For all groups in the combined group, find matches with the compare group
+        # Get all group IDs that are part of the base combined group
+        base_combined_group = self.get_combined_group_for_id(base_group_id)
+
+        # Get all files from all groups in the combined group
         for group_id in base_combined_group:
             base_files = session.query(self.db_manager.FileMetadata).filter(
                 self.db_manager.FileMetadata.group_id == group_id
@@ -289,11 +311,16 @@ class TimeSynchronizer(QObject):
                 self.db_manager.FileMetadata.group_id == compare_group_id
             ).all()
 
-            matches = self.find_best_matches(base_files, compare_files)
-            all_matches.extend(matches)
+            # Find matches between this group's files and the compare group
+            for base_file in base_files:
+                for compare_file in compare_files:
+                    similarity = ImageComparison.compare_media(base_file.file_path, compare_file.file_path)
+                    if similarity >= self.similarity_threshold:
+                        all_matches.append((base_file, compare_file, similarity))
 
+        # Sort by similarity and return top matches
         all_matches.sort(key=lambda x: x[2], reverse=True)
-        return all_matches[:5]  # Return top 5 matches
+        return all_matches[:5]
 
     def find_best_matches(self, base_files, compare_files):
         matches = []
@@ -454,20 +481,22 @@ class TimeSynchronizer(QObject):
         return [group_id]
 
     def merge_groups(self, group_id1, group_id2):
+        """Merge two groups and their associated groups"""
+        logger.info(f"Merging groups {group_id1} and {group_id2}")
+
+        # Get existing combined groups
         group1 = self.get_combined_group_for_id(group_id1)
         group2 = self.get_combined_group_for_id(group_id2)
 
-        if group1 != [group_id1]:  # group1 is already in a combined group
-            if group2 != [group_id2]:  # both are in combined groups
-                if group1 != group2:  # different combined groups
-                    self.combined_groups.remove(group1)
-                    self.combined_groups.remove(group2)
-                    self.combined_groups.append(group1 + group2)
-            else:  # only group1 is combined
-                self.combined_groups.remove(group1)
-                self.combined_groups.append(group1 + [group_id2])
-        elif group2 != [group_id2]:  # only group2 is combined
+        # Remove existing combined groups if they exist
+        if group1 in self.combined_groups:
+            self.combined_groups.remove(group1)
+        if group2 in self.combined_groups and group1 != group2:
             self.combined_groups.remove(group2)
-            self.combined_groups.append(group2 + [group_id1])
-        else:  # neither is combined
-            self.combined_groups.append([group_id1, group_id2])
+
+        # Create new combined group
+        merged_group = list(set(group1 + group2))
+        self.combined_groups.append(merged_group)
+
+        logger.info(f"Created new combined group: {merged_group}")
+        return merged_group

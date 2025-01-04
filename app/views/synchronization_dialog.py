@@ -80,7 +80,7 @@ class SynchronizationDialog(QDialog):
         self.group_info.setText(f"Comparing {left_group} with {right_group}")
 
     def set_metadata(self, left_metadata, right_metadata, left_evaluated=False, right_evaluated=False,
-                    left_field=None, right_field=None, left_correct_time=None, right_correct_time=None):
+                     left_field=None, right_field=None, left_correct_time=None, right_correct_time=None):
         logger = logging.getLogger(__name__)
         try:
             logger.info("Starting set_metadata")
@@ -88,40 +88,34 @@ class SynchronizationDialog(QDialog):
             logger.info(f"Left correct time: {left_correct_time}")
             logger.info(f"Right correct time: {right_correct_time}")
 
-            left_metadata = self._ensure_dict(left_metadata)
-            right_metadata = self._ensure_dict(right_metadata)
-
             self.left_table.setRowCount(0)
             self.right_table.setRowCount(0)
 
+            # For evaluated groups, only show Updated Time
             if left_evaluated:
-                logger.info("Processing left evaluated side")
                 row_position = self.left_table.rowCount()
                 self.left_table.insertRow(row_position)
                 self.left_table.setItem(row_position, 0, QTableWidgetItem("Updated Time"))
                 time_str = str(left_correct_time) if left_correct_time is not None else "Not set"
-                logger.info(f"Setting left time string: {time_str}")
                 self.left_table.setItem(row_position, 1, QTableWidgetItem(time_str))
             else:
-                logger.info("Processing left unevaluated side")
+                # For unevaluated groups, show all time fields
+                left_metadata = self._ensure_dict(left_metadata)
                 self._populate_table(self.left_table, left_metadata, left_field)
 
             if right_evaluated:
-                logger.info("Processing right evaluated side")
                 row_position = self.right_table.rowCount()
                 self.right_table.insertRow(row_position)
                 self.right_table.setItem(row_position, 0, QTableWidgetItem("Updated Time"))
                 time_str = str(right_correct_time) if right_correct_time is not None else "Not set"
-                logger.info(f"Setting right time string: {time_str}")
                 self.right_table.setItem(row_position, 1, QTableWidgetItem(time_str))
             else:
-                logger.info("Processing right unevaluated side")
+                # For unevaluated groups, show all time fields
+                right_metadata = self._ensure_dict(right_metadata)
                 self._populate_table(self.right_table, right_metadata, right_field)
 
-            logger.info("Completed set_metadata")
         except Exception as e:
             logger.error(f"Error in set_metadata: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
 
     def _populate_table(self, table, metadata, selected_field=None):
@@ -138,8 +132,6 @@ class SynchronizationDialog(QDialog):
 
                 table.setItem(row_position, 0, field_item)
                 table.setItem(row_position, 1, value_item)
-
-        table.resizeColumnsToContents()
 
     def _ensure_dict(self, metadata):
         if isinstance(metadata, str):
