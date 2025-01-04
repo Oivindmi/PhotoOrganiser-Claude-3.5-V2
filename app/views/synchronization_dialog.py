@@ -78,15 +78,31 @@ class SynchronizationDialog(QDialog):
     def set_group_info(self, left_group, right_group):
         self.group_info.setText(f"Comparing {left_group} with {right_group}")
 
-    def set_metadata(self, left_metadata, right_metadata, left_field=None, right_field=None):
+    def set_metadata(self, left_metadata, right_metadata, left_evaluated=False, right_evaluated=False, left_field=None,
+                     right_field=None):
         left_metadata = self._ensure_dict(left_metadata)
         right_metadata = self._ensure_dict(right_metadata)
 
         self.left_table.setRowCount(0)
         self.right_table.setRowCount(0)
 
-        self._populate_table(self.left_table, left_metadata, left_field)
-        self._populate_table(self.right_table, right_metadata, right_field)
+        if left_evaluated:
+            # Only show the updated time for evaluated groups
+            row_position = self.left_table.rowCount()
+            self.left_table.insertRow(row_position)
+            self.left_table.setItem(row_position, 0, QTableWidgetItem("Updated Time"))
+            self.left_table.setItem(row_position, 1, QTableWidgetItem(str(left_metadata.get('correct_time'))))
+        else:
+            self._populate_table(self.left_table, left_metadata, left_field)
+
+        if right_evaluated:
+            # Only show the updated time for evaluated groups
+            row_position = self.right_table.rowCount()
+            self.right_table.insertRow(row_position)
+            self.right_table.setItem(row_position, 0, QTableWidgetItem("Updated Time"))
+            self.right_table.setItem(row_position, 1, QTableWidgetItem(str(right_metadata.get('correct_time'))))
+        else:
+            self._populate_table(self.right_table, right_metadata, right_field)
 
     def _populate_table(self, table, metadata, selected_field=None):
         for key, value in metadata.items():
