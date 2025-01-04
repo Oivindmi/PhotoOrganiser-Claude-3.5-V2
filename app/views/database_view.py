@@ -54,6 +54,7 @@ class DatabaseView(QWidget):
             self.table.horizontalHeader().resizeSection(len(columns), 0)  # Hide the last column
             self.table.setColumnWidth(0, 200)  # Set width for the frozen column
 
+
             # Populate the table
             self.table.setRowCount(displayed_entries)
             for row, item in enumerate(data[:displayed_entries]):

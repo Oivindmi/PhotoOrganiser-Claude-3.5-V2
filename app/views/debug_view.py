@@ -66,6 +66,11 @@ class DebugView(QWidget):
         summary_btn.clicked.connect(self.show_sync_summary)
         controls_layout.addWidget(summary_btn)
 
+        # Clear cache button
+        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn.clicked.connect(self.clear_image_cache)
+        controls_layout.addWidget(clear_cache_btn)
+
         # Add stretch to push controls to the left
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
@@ -133,6 +138,19 @@ class DebugView(QWidget):
             logging.error(traceback.format_exc())
         finally:
             session.close()
+
+    def clear_image_cache(self):
+        confirm = QMessageBox.question(
+            self, 'Confirm Clear Cache',
+            'Are you sure you want to clear the image comparison cache? This will require recalculating all image similarities.',
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if confirm == QMessageBox.Yes:
+            from app.utils.image_comparison import ImageComparison
+            ImageComparison.clear_cache()
+            logging.info("Image comparison cache cleared by user request")
+            QMessageBox.information(self, "Cache Cleared", "Image comparison cache has been cleared.")
 
     def show_sync_summary(self):
         logging.info("\n=== SYNCHRONIZATION SUMMARY ===")

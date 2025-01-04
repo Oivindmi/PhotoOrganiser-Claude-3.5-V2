@@ -295,30 +295,58 @@ class TimeSynchronizer(QObject):
 
     def find_best_matches_across_windows(self, session, base_group_id, compare_group_id,
                                          base_time_windows, compare_time_windows):
-        """Find matches between photos, considering combined groups"""
         all_matches = []
+        base_files = {}
+        compare_files = {}
+        image_pairs = []
 
-        # Get all group IDs that are part of the base combined group
-        base_combined_group = self.get_combined_group_for_id(base_group_id)
+        # Get all base files
+        base_file_ids = [id for window_files in base_time_windows.values() for id in window_files]
+        base_query = session.query(self.db_manager.FileMetadata).filter(
+            self.db_manager.FileMetadata.id.in_(base_file_ids)
+        ).all()
+        base_files = {f.id: f for f in base_query}
 
-        # Get all files from all groups in the combined group
-        for group_id in base_combined_group:
-            base_files = session.query(self.db_manager.FileMetadata).filter(
-                self.db_manager.FileMetadata.group_id == group_id
-            ).all()
+        # Get all compare files
+        compare_file_ids = [id for window_files in compare_time_windows.values() for id in window_files]
+        compare_query = session.query(self.db_manager.FileMetadata).filter(
+            self.db_manager.FileMetadata.id.in_(compare_file_ids)
+        ).all()
+        compare_files = {f.id: f for f in compare_query}
 
-            compare_files = session.query(self.db_manager.FileMetadata).filter(
-                self.db_manager.FileMetadata.group_id == compare_group_id
-            ).all()
+        # Create pairs for parallel processing
+        for base_window, base_window_ids in base_time_windows.items():
+            compare_window_start = base_window - timedelta(minutes=30)
+            compare_window_end = base_window + timedelta(minutes=30)
 
-            # Find matches between this group's files and the compare group
-            for base_file in base_files:
-                for compare_file in compare_files:
-                    similarity = ImageComparison.compare_media(base_file.file_path, compare_file.file_path)
-                    if similarity >= self.similarity_threshold:
-                        all_matches.append((base_file, compare_file, similarity))
+            relevant_compare_ids = []
+            for compare_window, compare_window_ids in compare_time_windows.items():
+                if compare_window_start <= compare_window <= compare_window_end:
+                    relevant_compare_ids.extend(compare_window_ids)
 
-        # Sort by similarity and return top matches
+            for base_id in base_window_ids:
+                if base_id in base_files:
+                    base_file = base_files[base_id]
+                    for compare_id in relevant_compare_ids:
+                        if compare_id in compare_files:
+                            compare_file = compare_files[compare_id]
+                            image_pairs.append(((base_file.file_path, compare_file.file_path),
+                                                (base_file, compare_file)))
+
+        if not image_pairs:
+            return []
+
+        # Split the pairs
+        file_pairs, file_objects = zip(*image_pairs)
+
+        # Process all comparisons in parallel
+        similarities = ImageComparison.batch_compare_media(file_pairs)
+
+        # Create match tuples with similarity scores
+        for (base_file, compare_file), similarity in zip(file_objects, similarities):
+            if similarity >= self.similarity_threshold:
+                all_matches.append((base_file, compare_file, similarity))
+
         all_matches.sort(key=lambda x: x[2], reverse=True)
         return all_matches[:5]
 

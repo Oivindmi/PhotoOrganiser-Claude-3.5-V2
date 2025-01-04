@@ -9,6 +9,7 @@ from app.models.database_manager import DatabaseManager
 from app.utils.file_grouper import FileGrouper
 from app.utils.time_synchronizer import TimeSynchronizer
 
+
 def setup_logging():
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
