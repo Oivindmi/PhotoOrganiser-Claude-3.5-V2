@@ -57,6 +57,10 @@ class TimeSynchronizer(QObject):
                            compare_time_windows):
         session = self.db_manager.Session()
         try:
+            logger.info(f"Base group ID: {base_group_id} has been evaluated: {base_group_id in self.evaluated_groups}")
+            logger.info(
+                f"Compare group ID: {compare_group_id} has been evaluated: {compare_group_id in self.evaluated_groups}")
+
             best_matches = self.find_best_matches_across_windows(session, base_group_id, compare_group_id,
                                                                  base_time_windows, compare_time_windows)
 
@@ -67,28 +71,77 @@ class TimeSynchronizer(QObject):
             dialog = SynchronizationDialog(self.main_window)
 
             for base_file, compare_file, similarity in best_matches:
-                logger.info(f"Comparing {base_file.file_path} with {compare_file.file_path}, similarity: {similarity}")
-                dialog.set_images(base_file.file_path, compare_file.file_path)
+                try:
+                    logger.info(f"Processing match: {base_file.file_path} with {compare_file.file_path}")
 
-                base_field = base_file.original_time_field if base_group_id in self.evaluated_groups else None
-                compare_field = compare_file.original_time_field if compare_group_id in self.evaluated_groups else None
+                    dialog.set_images(base_file.file_path, compare_file.file_path)
+                    logger.info("Images set in dialog")
 
-                dialog.set_metadata(base_file.extra_metadata, compare_file.extra_metadata, base_field, compare_field)
-                dialog.set_group_info(f"Group {base_group_key} (ID: {base_group_id})",
-                                      f"Group {compare_group_key} (ID: {compare_group_id})")
-                dialog.set_file_names(os.path.basename(base_file.file_path), os.path.basename(compare_file.file_path))
+                    base_evaluated = base_group_id in self.evaluated_groups
+                    compare_evaluated = compare_group_id in self.evaluated_groups
+                    logger.info(f"Evaluation status - Base: {base_evaluated}, Compare: {compare_evaluated}")
 
-                choice, left_field, right_field = dialog.get_user_choice()
-                if choice == 'reject':
+                    base_field = base_file.original_time_field if base_evaluated else None
+                    compare_field = compare_file.original_time_field if compare_evaluated else None
+                    logger.info(f"Time fields - Base: {base_field}, Compare: {compare_field}")
+
+                    # Log metadata before setting
+                    logger.info(f"Base metadata: {base_file.extra_metadata}")
+                    logger.info(f"Compare metadata: {compare_file.extra_metadata}")
+                    logger.info(f"Base correct_time: {base_file.correct_time}")
+                    logger.info(f"Compare correct_time: {compare_file.correct_time}")
+
+                    try:
+                        dialog.set_metadata(
+                            base_file.extra_metadata,
+                            compare_file.extra_metadata,
+                            base_evaluated,
+                            compare_evaluated,
+                            base_field,
+                            compare_field,
+                            base_file.correct_time,
+                            compare_file.correct_time
+                        )
+                        logger.info("Metadata set in dialog")
+                    except Exception as e:
+                        logger.error(f"Error setting metadata: {str(e)}")
+                        raise
+
+                    dialog.set_group_info(f"Group {base_group_key} (ID: {base_group_id})",
+                                          f"Group {compare_group_key} (ID: {compare_group_id})")
+                    logger.info("Group info set in dialog")
+
+                    dialog.set_file_names(os.path.basename(base_file.file_path),
+                                          os.path.basename(compare_file.file_path))
+                    logger.info("File names set in dialog")
+
+                    choice, left_field, right_field = dialog.get_user_choice()
+                    logger.info(f"User choice received: {choice}, {left_field}, {right_field}")
+
+                    if choice == 'reject':
+                        continue
+                    elif choice in ['left', 'right']:
+                        self.update_group_times(session, base_group_id, compare_group_id, base_file, compare_file,
+                                                left_field, right_field, choice)
+                        return True
+
+                except Exception as e:
+                    logger.error(f"Error processing match: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     continue
-                elif choice in ['left', 'right']:
-                    self.update_group_times(session, base_group_id, compare_group_id, base_file, compare_file,
-                                            left_field, right_field, choice)
-                    return True
 
-            return False  # If all matches were rejected
+            return False
+        except Exception as e:
+            logger.error(f"Error in synchronize_groups: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
         finally:
-            session.close()
+            try:
+                session.close()
+            except Exception as e:
+                logger.error(f"Error closing session: {str(e)}")
 
     def _find_datetime_in_metadata(self, metadata, chosen_field):
         if not metadata:
@@ -114,53 +167,67 @@ class TimeSynchronizer(QObject):
             logger.info(
                 f"Starting update_group_times for base_group_id: {base_group_id}, compare_group_id: {compare_group_id}")
 
-            base_metadata = self._ensure_dict(base_file.extra_metadata)
-            compare_metadata = self._ensure_dict(compare_file.extra_metadata)
+            if choice == 'left':
+                # Use left (base) time as reference
+                if left_field == "Updated Time":
+                    base_time = base_file.correct_time
+                else:
+                    base_metadata = self._ensure_dict(base_file.extra_metadata)
+                    base_time = self._find_datetime_in_metadata(base_metadata, left_field)
 
-            base_time = self._find_datetime_in_metadata(base_metadata, left_field)
-            compare_time = self._find_datetime_in_metadata(compare_metadata, right_field)
-
-            if base_time and compare_time:
-                base_time = self._make_naive(base_time)
-                compare_time = self._make_naive(compare_time)
-
-                logger.info(f"Base time: {base_time}")
-                logger.info(f"Compare time: {compare_time}")
-                logger.info(f"Choice: {choice}")
-
-                if choice == 'left':
-                    # Keep base time (left) as reference
-                    logger.info(f"Using left time as reference: {base_time}")
+                if base_time:
+                    logger.info(f"Using left (base) time as reference: {base_time}")
                     # Set base group's field without time adjustment
                     self.update_group(session, base_group_id, left_field, timedelta())
-                    # Update compare group to match base time
-                    time_delta = base_time - compare_time
-                    logger.info(f"Updating compare group with delta: {time_delta}")
-                    self.update_group(session, compare_group_id, right_field, time_delta)
-                else:  # choice == 'right'
-                    # Keep compare time (right) as reference
-                    logger.info(f"Using right time as reference: {compare_time}")
+
+                    if right_field == "Updated Time":
+                        compare_time = compare_file.correct_time or \
+                                       self._find_datetime_in_metadata(self._ensure_dict(compare_file.extra_metadata),
+                                                                       compare_file.original_time_field)
+                    else:
+                        compare_time = self._find_datetime_in_metadata(self._ensure_dict(compare_file.extra_metadata),
+                                                                       right_field)
+
+                    if compare_time:
+                        time_delta = base_time - compare_time
+                        logger.info(f"Calculated time delta: {time_delta}")
+                        self.update_group(session, compare_group_id, right_field, time_delta)
+
+            else:  # choice == 'right'
+                # Use right (compare) time as reference
+                if right_field == "Updated Time":
+                    compare_time = compare_file.correct_time or \
+                                   self._find_datetime_in_metadata(self._ensure_dict(compare_file.extra_metadata),
+                                                                   compare_file.original_time_field)
+                else:
+                    compare_metadata = self._ensure_dict(compare_file.extra_metadata)
+                    compare_time = self._find_datetime_in_metadata(compare_metadata, right_field)
+
+                if compare_time:
+                    logger.info(f"Using right (compare) time as reference: {compare_time}")
                     # Set compare group's field without time adjustment
                     self.update_group(session, compare_group_id, right_field, timedelta())
-                    # Update base group to match compare time
-                    time_delta = compare_time - base_time
-                    logger.info(f"Updating base group with delta: {time_delta}")
-                    self.update_group(session, base_group_id, left_field, time_delta)
 
-                # Store chosen fields
-                self.evaluated_groups.add(base_group_id)
-                self.evaluated_groups.add(compare_group_id)
+                    if left_field == "Updated Time":
+                        base_time = base_file.correct_time
+                    else:
+                        base_time = self._find_datetime_in_metadata(self._ensure_dict(base_file.extra_metadata),
+                                                                    left_field)
 
-                # Merge the groups after successful update
-                self.merge_groups(base_group_id, compare_group_id)
+                    if base_time:
+                        time_delta = compare_time - base_time
+                        logger.info(f"Calculated time delta: {time_delta}")
+                        self.update_group(session, base_group_id, left_field, time_delta)
 
-                session.commit()
-                logger.info(f"Committed changes to database")
-                self.database_updated.emit()
-                logger.info(f"Emitted database_updated signal")
-            else:
-                logger.error(
-                    f"Failed to get times for comparison. Base time: {base_time}, Compare time: {compare_time}")
+            # Store chosen fields and merge groups
+            self.evaluated_groups.add(base_group_id)
+            self.evaluated_groups.add(compare_group_id)
+            self.merge_groups(base_group_id, compare_group_id)
+
+            session.commit()
+            logger.info("Committed changes to database")
+            self.database_updated.emit()
+            logger.info("Emitted database_updated signal")
 
         except Exception as e:
             logger.error(f"Error in update_group_times: {str(e)}")
@@ -174,22 +241,26 @@ class TimeSynchronizer(QObject):
             logger.info(f"Found {len(files)} files in group {group_id}")
 
             for file in files:
-                file_metadata = self._ensure_dict(file.extra_metadata)
-
-                if chosen_field is None and file.correct_time:
-                    # This is an already evaluated group, just update the correct_time
-                    file.correct_time += time_delta
-                    logger.info(f"Updated correct_time for {file.file_path} by adding {time_delta}")
+                if chosen_field == "Updated Time":
+                    # Simply apply the time delta to the existing correct_time
+                    if file.correct_time:
+                        file.correct_time += time_delta
+                        logger.info(
+                            f"Updated correct_time with delta for {file.file_path}: new time = {file.correct_time}")
                 else:
-                    # This is a new group being evaluated
+                    # Regular metadata field processing
+                    file_metadata = self._ensure_dict(file.extra_metadata)
                     original_time = self._find_datetime_in_metadata(file_metadata, chosen_field)
+
                     if original_time:
                         file.correct_time = original_time + time_delta
                         file.original_time_field = chosen_field
                         logger.info(
-                            f"Setting correct_time for {file.file_path} to {file.correct_time}, original_time_field = {file.original_time_field}")
+                            f"Setting correct_time for {file.file_path} to {file.correct_time}, original_time_field = {chosen_field}")
                     else:
                         logger.warning(f"Could not find original time for file {file.file_path}")
+
+            logger.info(f"Completed update_group for group {group_id}")
         except Exception as e:
             logger.error(f"Error in update_group: {str(e)}")
             logger.error(traceback.format_exc())

@@ -71,7 +71,16 @@ class TimeSynchronizer(QObject):
                 base_field = base_file.original_time_field if base_group_id in self.evaluated_groups else None
                 compare_field = compare_file.original_time_field if compare_group_id in self.evaluated_groups else None
 
-                dialog.set_metadata(base_file.extra_metadata, compare_file.extra_metadata, base_field, compare_field)
+                dialog.set_metadata(
+                    base_file.extra_metadata,
+                    compare_file.extra_metadata,
+                    base_field is not None,
+                    compare_field is not None,
+                    base_field,
+                    compare_field,
+                    base_file.correct_time,
+                    compare_file.correct_time
+                )
                 dialog.set_group_info(f"Group {base_group_key} (ID: {base_group_id})",
                                       f"Group {compare_group_key} (ID: {compare_group_id})")
                 dialog.set_file_names(os.path.basename(base_file.file_path), os.path.basename(compare_file.file_path))
