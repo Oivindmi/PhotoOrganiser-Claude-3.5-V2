@@ -1,0 +1,97 @@
+# Photo Organizer Program Requirements
+
+## 1. File Handling
+- Scan specified folders for media files (photos and videos)
+- Support various image formats (e.g., JPG, PNG, TIFF, RAW)
+- Support various video formats (e.g., MP4, AVI, MOV)
+- Handle large numbers of files efficiently
+
+## 2. Metadata Extraction
+- Extract metadata from image and video files
+- Use ExifTool for comprehensive metadata extraction
+- Handle various metadata formats and standards
+- Extract relevant time and date information
+- Extract camera model information
+
+## 3. Database Management
+- Use SQLite database to store file metadata
+- Implement a FileMetadata model with fields for:
+  - File path
+  - File info (unique identifier)
+  - Camera model
+  - File size
+  - Extra metadata (as JSON)
+  - Correct time (for time synchronization)
+  - Original time field
+  - Group ID
+  - Group key
+- Implement efficient bulk insert and update operations
+
+## 4. File Grouping
+- Group files based on camera model and folder structure
+- Implement time-based subgrouping within each group
+- Generate unique group keys and numeric group IDs
+- Allow for flexible group management (merging, splitting)
+
+## 5. Time Synchronization
+- Implement a robust datetime parsing method to handle various date formats
+- Compare images across groups to find matching scenes
+- Use image similarity algorithms for comparison (histograms, feature matching)
+- Allow user to select reference times for synchronization
+- Update file timestamps based on user selections
+- Handle timezone differences and daylight saving time
+
+## 6. Image Comparison
+- Implement robust image comparison methods
+- Handle both image-to-image and video-to-image comparisons
+- Use histogram comparison and feature matching for similarity calculation
+- Implement safeguards against crashes due to large file sizes or corrupt data
+- Allow for adjustable similarity thresholds
+
+## 7. User Interface
+- Implement a main window with tabs for different views
+- Create a database view to display all files and their metadata
+- Create a groups view to display grouped files
+- Implement a synchronization dialog for user input during time synchronization
+- Display both group keys and group IDs in the UI
+- Provide real-time updates in the database view during synchronization
+
+## 8. Performance and Scalability
+- Optimize for handling large numbers of files (thousands to tens of thousands)
+- Implement batch processing for metadata extraction and database updates
+- Use efficient database queries and indexing
+- Implement lazy loading or pagination for large datasets in the UI
+
+## 9. Error Handling and Logging
+- Implement comprehensive error handling throughout the application
+- Provide detailed logging for debugging and auditing purposes
+- Handle gracefully any file reading or writing errors
+
+## 10. Configurability
+- Allow user to set folders for scanning
+- Provide options to adjust similarity thresholds for image matching
+- Allow customization of time window for grouping and synchronization
+
+## 11. Data Integrity and Safety
+- Implement safeguards against accidental data loss
+- Provide options for backing up original metadata
+- Implement a dry-run mode for testing synchronization without making changes
+
+## 12. Extensibility
+- Design the system to be easily extendable for future features
+- Use modular design to allow for easy addition of new file formats or metadata standards
+
+## 13. Cross-platform Compatibility
+- Ensure the application works on Windows, macOS, and Linux
+- Handle path differences across operating systems
+
+## 14. Documentation and Help
+- Provide in-app help and documentation
+- Include tooltips and explanations for complex features
+
+## 15. Testing
+- Implement unit tests for critical components
+- Perform integration testing for the complete workflow
+- Test with various file formats and edge cases
+
+This document serves as a comprehensive overview of the requirements for the Photo Organizer program. It should be used as a guide for development, testing, and future enhancements of the application.

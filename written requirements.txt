@@ -1,0 +1,108 @@
+Certainly! I'll provide a comprehensive overview of the requirements for your photo organizing program based on our discussions. Here's a summary of the key features and requirements:
+
+GOAL OF Program
+Align the time and date of pictures and videos taken by different cameras so that two pictures taken at the same time from different cameras actually has the same date and time. 
+When the correct time and date has been found for each photo/video then use this to write the correct time and date to all relevant fields for the file
+
+File Scanning:
+
+Scan specified folders and subfolders for image and video files.
+Handle a large number of files (1000+ pictures and videos).
+
+
+Metadata Extraction:
+
+Use ExifTool to extract metadata from image and video files.
+Extract all date and time fields available in the metadata.
+Extract camera model information.
+Calculate file size in megabytes.
+
+
+File Grouping:
+
+Group files based on camera model, subfolder, and file type where camera model information is available.
+Use a combination of folder, camera model field, file name, and file type for grouping when camera model information is not available.
+
+
+Database Storage:
+
+Use SQLite database to store file metadata.
+Store file path, file info (unique identifier), camera model, file size, and all extracted metadata.
+Handle potential duplicate entries.
+
+
+User Interface:
+
+Implement a graphical user interface (GUI) using PyQt5.
+Allow users to select folders for processing.
+Display processed data in a table format.
+Show a summary of database contents.
+
+
+Data Synchronization:
+
+Implement a process to synchronize date and time information between photo groups.
+Allow users to compare and align timestamps between different camera groups.
+
+
+CSV Export:
+
+Export all database contents to a CSV file.
+Ensure proper encoding (UTF-8) for special characters.
+Save the CSV file in a user-specified location (C:\TEST FOLDER FOR PHOTO APP).
+
+
+Performance Considerations:
+
+Process files in batches to handle large numbers of files efficiently.
+Implement multithreading or multiprocessing for improved performance.
+
+
+Error Handling and Logging:
+
+Implement comprehensive error handling.
+Log important events, errors, and warnings.
+
+
+File Compatibility:
+
+Handle various image and video file formats.
+Properly process files with special characters in their names or paths.
+
+
+Data Integrity:
+
+Ensure that original metadata is preserved.
+Store adjusted timestamps separately from original data.
+
+
+User Interaction for Synchronization:
+
+Allow users to select primary date/time fields for each group of photos.
+Present users with pairs of photos from different groups for timestamp comparison and adjustment.
+
+
+Flexible Metadata Handling:
+
+Store all extracted metadata, even if not explicitly defined in the database schema.
+Use a flexible schema (JSON field) to accommodate varying metadata across different file types.
+
+
+Data Visualization:
+
+Provide a way for users to view and verify synchronized data.
+Implement a timeline view of photos across all groups.
+
+
+Excel Compatibility:
+
+Ensure that the exported CSV file can be easily imported into Excel with correct character encoding.
+
+
+Scalability:
+
+Design the system to potentially handle future enhancements or additional metadata fields.
+
+
+
+This overview captures the main requirements and features we've discussed for your photo organizing program. It's designed to handle a large number of files, extract comprehensive metadata, allow for user-guided synchronization of timestamps, and provide both database storage and CSV export functionality, all while maintaining a user-friendly interface.

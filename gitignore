@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+photo_organizer_env/
+
+# PyCharm
+.idea/
+
+# SQLite database
+*.db
+
+# Logs
+*.log

@@ -1,0 +1,6 @@
+PyQt5==5.15.9
+SQLAlchemy==1.4.46
+tqdm==4.65.0
+Pillow==9.5.0
+opencv-python-headless==4.7.0.72
+alembic==1.11.1
