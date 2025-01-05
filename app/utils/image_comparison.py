@@ -472,6 +472,7 @@ class ImageComparison:
         except cv2.error as e:
             logging.error(f"GPU feature detection error: {str(e)}")
             return 0.0
+
     @staticmethod
     def _histogram_similarity_gpu(gpu_img1: cv2.cuda_GpuMat, gpu_img2: cv2.cuda_GpuMat) -> float:
         try:
