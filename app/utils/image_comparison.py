@@ -105,6 +105,7 @@ class ImageComparison:
     TARGET_SIZE = (200, 200)
 
 
+
     @classmethod
     def init_gpu(cls) -> None:
         try:
