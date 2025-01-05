@@ -142,15 +142,19 @@ class DebugView(QWidget):
     def clear_image_cache(self):
         confirm = QMessageBox.question(
             self, 'Confirm Clear Cache',
-            'Are you sure you want to clear the image comparison cache? This will require recalculating all image similarities.',
+            'Are you sure you want to clear the image comparison cache?',
             QMessageBox.Yes | QMessageBox.No
         )
 
         if confirm == QMessageBox.Yes:
-            from app.utils.image_comparison import ImageComparison
-            ImageComparison.clear_cache()
-            logging.info("Image comparison cache cleared by user request")
-            QMessageBox.information(self, "Cache Cleared", "Image comparison cache has been cleared.")
+            try:
+                from app.utils.image_comparison import ImageComparison
+                ImageComparison._cache.safe_clear()
+                logging.info("Image comparison cache cleared by user request")
+                QMessageBox.information(self, "Cache Cleared", "Image comparison cache has been cleared.")
+            except Exception as e:
+                logging.error(f"Error clearing cache: {str(e)}")
+                QMessageBox.warning(self, "Error", f"Failed to clear cache: {str(e)}")
 
     def show_sync_summary(self):
         logging.info("\n=== SYNCHRONIZATION SUMMARY ===")

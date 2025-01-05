@@ -6,89 +6,211 @@ from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 import pickle
 from typing import List, Tuple, Optional
+import json
 
 logger = logging.getLogger(__name__)
 
+def compare_media_pair(pair: Tuple[str, str]) -> float:
+    from app.utils.image_comparison import ImageComparison  # Import inside function
+    try:
+        return ImageComparison.compare_media(pair[0], pair[1])
+    except Exception as e:
+        logging.error(f"Error in compare_media_pair: {str(e)}")
+        return 0.0
+class ImageCache:
+    def __init__(self, cache_file="image_similarity_cache.pkl"):
+        self.cache_file = cache_file
+        self.cache = self._load_cache()
 
+    def _load_cache(self):
+        if os.path.exists(self.cache_file):
+            try:
+                with open(self.cache_file, "rb") as f:
+                    return pickle.load(f)
+            except Exception as e:
+                logger.error(f"Error loading cache: {e}")
+                return {}
+        return {}
+
+    def _save_cache(self):
+        if not self.cache:
+            return
+        try:
+            # Create a temp file first
+            temp_file = f"{self.cache_file}.tmp"
+            with open(temp_file, "wb") as f:
+                pickle.dump(self.cache, f)
+            # Then rename it to the actual cache file
+            if os.path.exists(self.cache_file):
+                try:
+                    os.remove(self.cache_file)
+                except Exception:
+                    pass
+            os.rename(temp_file, self.cache_file)
+        except Exception as e:
+            logger.error(f"Error saving cache: {str(e)}")
+            # Clean up temp file if it exists
+            if os.path.exists(f"{self.cache_file}.tmp"):
+                try:
+                    os.remove(f"{self.cache_file}.tmp")
+                except Exception:
+                    pass
+
+    def safe_clear(self):
+        try:
+            # First clear the memory cache
+            self.cache = {}
+            # Try to save the empty cache
+            try:
+                with open(self.cache_file, "wb") as f:
+                    pickle.dump({}, f)
+            except:
+                pass
+        except Exception as e:
+            logger.error(f"Error in safe_clear: {str(e)}")
+
+    def get(self, key):
+        return self.cache.get(key)
+
+    def set(self, key, value):
+        self.cache[key] = value
+        self._save_cache()
+
+    def exists(self, key):
+        return key in self.cache
+
+    def clear(self):
+        try:
+            self.cache = {}
+            # Save empty cache first
+            self._save_cache()
+            # Then try to remove the file
+            if os.path.exists(self.cache_file):
+                try:
+                    os.remove(self.cache_file)
+                except PermissionError:
+                    logger.warning(f"Could not remove cache file {self.cache_file} - it may be in use")
+                except Exception as e:
+                    logger.error(f"Error removing cache file: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error clearing cache: {str(e)}")
+            # Ensure cache is empty even if file operations fail
+            self.cache = {}
 class ImageComparison:
-    _cache = {}
+    _cache = ImageCache()
     TARGET_SIZE = (200, 200)
     _has_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
 
-    @staticmethod
-    def has_cuda() -> bool:
-        return ImageComparison._has_cuda
-
-    @staticmethod
-    def init_gpu():
-        if ImageComparison._has_cuda:
-            cv2.cuda.setDevice(0)
-            logger.info("CUDA device initialized")
-            logger.info(f"Using GPU: {cv2.cuda.getDevice()}")
-        else:
-            logger.warning("No CUDA device available, falling back to CPU")
-
-    @staticmethod
-    def compare_image_data(img1: np.ndarray, img2: np.ndarray) -> float:
-        if img1 is None or img2 is None:
-            return 0
-
-        img1 = cv2.resize(img1, ImageComparison.TARGET_SIZE)
-        img2 = cv2.resize(img2, ImageComparison.TARGET_SIZE)
-
-        if ImageComparison._has_cuda:
-            return ImageComparison._compare_image_data_gpu(img1, img2)
-        else:
-            return ImageComparison._compare_image_data_cpu(img1, img2)
-
-    @staticmethod
-    def _compare_image_data_gpu(img1: np.ndarray, img2: np.ndarray) -> float:
+    @classmethod
+    def init_gpu(cls) -> None:
         try:
-            # Convert images to GPU
+            device_count = cv2.cuda.getCudaEnabledDeviceCount()
+            if device_count > 0:
+                cls.has_cuda = True
+                cls.device = cv2.cuda.getDevice()
+                logging.info(f"GPU acceleration enabled")
+            else:
+                logging.warning("No CUDA devices available, using CPU")
+        except Exception as e:
+            logging.error(f"Error initializing GPU: {str(e)}")
+            cls.has_cuda = False
+            cls.device = None
+
+    @staticmethod
+    def batch_compare_media(file_pairs: List[Tuple[str, str]]) -> List[float]:
+        results = []
+        for pair in file_pairs:
+            try:
+                similarity = ImageComparison.compare_media(pair[0], pair[1])
+                results.append(similarity)
+            except Exception as e:
+                logger.error(f"Error comparing pair: {str(e)}")
+                results.append(0.0)
+        return results
+    """
+    @staticmethod
+    def batch_compare_media(file_pairs: List[Tuple[str, str]]) -> List[float]:
+        num_workers = max(1, multiprocessing.cpu_count() - 1)
+        uncached_pairs = []
+        results = []
+
+        for pair in file_pairs:
+            cache_key = tuple(sorted(pair))
+            if ImageComparison._cache.exists(cache_key):
+                results.append(ImageComparison._cache.get(cache_key))
+            else:
+                uncached_pairs.append(pair)
+
+        if uncached_pairs:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                new_results = list(executor.map(compare_media_pair, uncached_pairs))
+
+                for pair, result in zip(uncached_pairs, new_results):
+                    cache_key = tuple(sorted(pair))
+                    ImageComparison._cache.set(cache_key, result)
+
+                results.extend(new_results)
+
+        return results
+    """
+    @staticmethod
+    def _load_image(file_path: str) -> Optional[np.ndarray]:
+        try:
+            img = cv2.imread(file_path)
+            if img is None:
+                logging.warning(f"Failed to load image: {file_path}")
+                return None
+            return cv2.resize(img, ImageComparison.TARGET_SIZE)
+        except Exception as e:
+            logging.error(f"Error loading image {file_path}: {str(e)}")
+            return None
+
+    @classmethod
+    def compare_images(cls, img1_path: str, img2_path: str) -> float:
+        img1 = cls._load_image(img1_path)
+        img2 = cls._load_image(img2_path)
+
+        if img1 is None or img2 is None:
+            return 0.0
+
+        try:
+            if cls.has_cuda:
+                return cls._compare_images_gpu(img1, img2)
+            return cls._compare_images_cpu(img1, img2)
+        except Exception as e:
+            logging.error(f"Error comparing images: {str(e)}")
+            return 0.0
+
+    @classmethod
+    def _compare_images_gpu(cls, img1: np.ndarray, img2: np.ndarray) -> float:
+        try:
+            # Upload images to GPU
             gpu_img1 = cv2.cuda_GpuMat()
             gpu_img2 = cv2.cuda_GpuMat()
             gpu_img1.upload(img1)
             gpu_img2.upload(img2)
 
-            # Convert to grayscale on GPU
-            gpu_gray1 = cv2.cuda.cvtColor(gpu_img1, cv2.COLOR_BGR2GRAY)
-            gpu_gray2 = cv2.cuda.cvtColor(gpu_img2, cv2.COLOR_BGR2GRAY)
+            # Convert to grayscale
+            gray1 = cv2.cuda.cvtColor(gpu_img1, cv2.COLOR_BGR2GRAY)
+            gray2 = cv2.cuda.cvtColor(gpu_img2, cv2.COLOR_BGR2GRAY)
 
-            # Calculate histograms on GPU
-            hist_sim = ImageComparison._histogram_similarity_gpu(gpu_img1, gpu_img2)
+            # Calculate histograms
+            hist_sim = cls._histogram_similarity_gpu(gpu_img1, gpu_img2)
 
             if hist_sim > 0.5:
-                # Download for CPU feature matching if needed
-                gray1 = gpu_gray1.download()
-                gray2 = gpu_gray2.download()
-                feature_sim = ImageComparison._feature_similarity_cpu(gray1, gray2)
+                # Download for feature matching (not available on GPU)
+                cpu_gray1 = gray1.download()
+                cpu_gray2 = gray2.download()
+                feature_sim = cls._feature_similarity_cpu(cpu_gray1, cpu_gray2)
                 return 0.6 * hist_sim + 0.4 * feature_sim
 
             return hist_sim
-
         except cv2.error as e:
-            logger.error(f"GPU processing error: {str(e)}")
-            return ImageComparison._compare_image_data_cpu(img1, img2)
+            logging.error(f"GPU processing error: {str(e)}, falling back to CPU")
+            return cls._compare_images_cpu(img1, img2)
 
     @staticmethod
-    def _histogram_similarity_gpu(gpu_img1: cv2.cuda_GpuMat, gpu_img2: cv2.cuda_GpuMat) -> float:
-        try:
-            hist1 = cv2.cuda.calcHist(gpu_img1)
-            hist2 = cv2.cuda.calcHist(gpu_img2)
-
-            # Download histograms for comparison
-            cpu_hist1 = hist1.download()
-            cpu_hist2 = hist2.download()
-
-            return cv2.compareHist(cpu_hist1, cpu_hist2, cv2.HISTCMP_CORREL)
-        except cv2.error:
-            # Fallback to CPU if GPU histogram fails
-            img1 = gpu_img1.download()
-            img2 = gpu_img2.download()
-            return ImageComparison._histogram_similarity_cpu(img1, img2)
-
-    @staticmethod
-    def _compare_image_data_cpu(img1: np.ndarray, img2: np.ndarray) -> float:
+    def _compare_images_cpu(img1: np.ndarray, img2: np.ndarray) -> float:
         hist_sim = ImageComparison._histogram_similarity_cpu(img1, img2)
 
         if hist_sim > 0.5:
@@ -98,6 +220,23 @@ class ImageComparison:
             return 0.6 * hist_sim + 0.4 * feature_sim
 
         return hist_sim
+
+    @staticmethod
+    def _histogram_similarity_gpu(gpu_img1: cv2.cuda_GpuMat, gpu_img2: cv2.cuda_GpuMat) -> float:
+        try:
+            hist1 = cv2.cuda.calcHist(gpu_img1)
+            hist2 = cv2.cuda.calcHist(gpu_img2)
+
+            # Download histograms for comparison (CPU)
+            cpu_hist1 = hist1.download()
+            cpu_hist2 = hist2.download()
+
+            return cv2.compareHist(cpu_hist1, cpu_hist2, cv2.HISTCMP_CORREL)
+        except Exception:
+            # Fallback to CPU if GPU histogram fails
+            img1 = gpu_img1.download()
+            img2 = gpu_img2.download()
+            return ImageComparison._histogram_similarity_cpu(img1, img2)
 
     @staticmethod
     def _histogram_similarity_cpu(img1: np.ndarray, img2: np.ndarray) -> float:
@@ -112,12 +251,16 @@ class ImageComparison:
         kp2, des2 = orb.detectAndCompute(gray2, None)
 
         if not kp1 or not kp2 or des1 is None or des2 is None:
-            return 0
+            return 0.0
 
         bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         matches = bf.match(des1, des2)
         matches = sorted(matches, key=lambda x: x.distance)[:50]
 
-        num_good_matches = sum(1 for m in matches if m.distance < 40)
-        max_possible_matches = min(len(kp1), len(kp2), 50)
-        return num_good_matches / max_possible_matches if max_possible_matches > 0 else 0
+        good_matches = sum(1 for m in matches if m.distance < 40)
+        max_matches = min(len(kp1), len(kp2), 50)
+        return good_matches / max_matches if max_matches > 0 else 0.0
+
+
+# Initialize GPU on module import
+ImageComparison.init_gpu()
