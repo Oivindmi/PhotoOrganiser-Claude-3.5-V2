@@ -81,8 +81,8 @@ class TimeSynchronizer(QObject):
                     base_file.correct_time,
                     compare_file.correct_time
                 )
-                dialog.set_group_info(f"Group {base_group_key} (ID: {base_group_id})",
-                                      f"Group {compare_group_key} (ID: {compare_group_id})")
+                # dialog.set_group_info(f"Group {base_group_key} (ID: {base_group_id})",
+                #                      f"Group {compare_group_key} (ID: {compare_group_id})")
                 dialog.set_file_names(os.path.basename(base_file.file_path), os.path.basename(compare_file.file_path))
 
                 choice, left_field, right_field = dialog.get_user_choice()

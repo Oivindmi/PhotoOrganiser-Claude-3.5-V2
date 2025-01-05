@@ -116,15 +116,18 @@ class ImageComparison:
             cls.has_cuda = False
             cls.device = None
 
-    @staticmethod
     def batch_compare_media(file_pairs: List[Tuple[str, str]]) -> List[float]:
         results = []
+        logger.info(f"Starting batch comparison of {len(file_pairs)} pairs")
+
         for pair in file_pairs:
             try:
-                similarity = ImageComparison.compare_media(pair[0], pair[1])
+                similarity = ImageComparison.compare_images(pair[0], pair[1])
+                # logger.info(f"Compared {pair[0]} with {pair[1]}, similarity: {similarity}")
                 results.append(similarity)
             except Exception as e:
                 logger.error(f"Error comparing pair: {str(e)}")
+                logger.error(traceback.format_exc())
                 results.append(0.0)
         return results
     """
@@ -153,10 +156,16 @@ class ImageComparison:
 
         return results
     """
+
     @staticmethod
     def _load_image(file_path: str) -> Optional[np.ndarray]:
         try:
-            img = cv2.imread(file_path)
+            # Read image file into a byte array
+            with open(file_path, 'rb') as f:
+                byte_array = bytearray(f.read())
+                img_array = np.asarray(byte_array, dtype=np.uint8)
+                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
             if img is None:
                 logging.warning(f"Failed to load image: {file_path}")
                 return None
@@ -263,4 +272,5 @@ class ImageComparison:
 
 
 # Initialize GPU on module import
+print("Available methods:", [method for method in dir(ImageComparison) if not method.startswith('_')])
 ImageComparison.init_gpu()
