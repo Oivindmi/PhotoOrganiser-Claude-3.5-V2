@@ -211,3 +211,18 @@ class DebugView(QWidget):
             session.close()
 
         logging.info("\n=== END OF SUMMARY ===\n")
+
+    def show_gpu_info(self):
+        from app.utils.image_comparison import ImageComparison
+
+        if ImageComparison.has_cuda():
+            gpu_count = cv2.cuda.getCudaEnabledDeviceCount()
+            device_name = cv2.cuda.getDevice()
+            info = f"GPU Acceleration: Enabled\n"
+            info += f"CUDA Devices: {gpu_count}\n"
+            info += f"Current Device: {device_name}\n"
+        else:
+            info = "GPU Acceleration: Not Available (using CPU)"
+
+        logging.info(info)
+        QMessageBox.information(self, "GPU Status", info)
