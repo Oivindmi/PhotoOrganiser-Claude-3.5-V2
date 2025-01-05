@@ -101,6 +101,9 @@ class ImageComparison:
     TARGET_SIZE = (200, 200)
     _has_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
 
+    BATCH_SIZE = 128
+    TARGET_SIZE = (200, 200)
+
     @classmethod
     def init_gpu(cls) -> None:
         try:
@@ -116,20 +119,59 @@ class ImageComparison:
             cls.has_cuda = False
             cls.device = None
 
-    def batch_compare_media(file_pairs: List[Tuple[str, str]]) -> List[float]:
+    @classmethod
+    def batch_compare_media(cls, file_pairs: List[Tuple[str, str]]) -> List[float]:
         results = []
-        logger.info(f"Starting batch comparison of {len(file_pairs)} pairs")
+        num_batches = (len(file_pairs) + cls.BATCH_SIZE - 1) // cls.BATCH_SIZE
 
-        for pair in file_pairs:
-            try:
-                similarity = ImageComparison.compare_images(pair[0], pair[1])
-                # logger.info(f"Compared {pair[0]} with {pair[1]}, similarity: {similarity}")
-                results.append(similarity)
-            except Exception as e:
-                logger.error(f"Error comparing pair: {str(e)}")
-                logger.error(traceback.format_exc())
-                results.append(0.0)
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for i in range(num_batches):
+                start_idx = i * cls.BATCH_SIZE
+                end_idx = min(start_idx + cls.BATCH_SIZE, len(file_pairs))
+                batch_pairs = file_pairs[start_idx:end_idx]
+                future = executor.submit(cls._process_batch, batch_pairs)
+                futures.append(future)
+
+            for future in futures:
+                results.extend(future.result())
+
         return results
+
+    @classmethod
+    def _process_batch(cls, batch_pairs: List[Tuple[str, str]]) -> List[float]:
+        batch_results = []
+
+        # Load images for the batch
+        batch_images_a = []
+        batch_images_b = []
+        for pair in batch_pairs:
+            img_a = cls._load_image(pair[0])
+            img_b = cls._load_image(pair[1])
+            if img_a is not None and img_b is not None:
+                batch_images_a.append(img_a)
+                batch_images_b.append(img_b)
+
+        # Transfer images to GPU
+        gpu_images_a = cv2.cuda_GpuMat()
+        gpu_images_b = cv2.cuda_GpuMat()
+        gpu_images_a.upload(np.stack(batch_images_a))
+        gpu_images_b.upload(np.stack(batch_images_b))
+
+        # Perform comparisons on GPU
+        gpu_similarities = cv2.cuda.compareHist(gpu_images_a, gpu_images_b, cv2.HISTCMP_CORREL)
+
+        # Transfer results back to CPU
+        similarities = gpu_similarities.download()
+
+        # Process results
+        for similarity in similarities:
+            if similarity >= cls.SIMILARITY_THRESHOLD:
+                batch_results.append(similarity)
+            else:
+                batch_results.append(0.0)
+
+        return batch_results
     """
     @staticmethod
     def batch_compare_media(file_pairs: List[Tuple[str, str]]) -> List[float]:
