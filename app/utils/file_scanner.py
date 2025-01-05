@@ -13,6 +13,7 @@ class FileScanner:
         _, extension = os.path.splitext(file_path)
         return extension.lower() in self.allowed_extensions
 
+
     def scan_folders(self, folder_paths):
         all_files = []
         file_info_dict = {}

@@ -49,6 +49,7 @@ class MediaMatcher:
 
         return max(similarities) if similarities else 0
 
+
     def compare_audio_fingerprints(self, item1, item2):
         if not (item1.is_video and item2.is_video):
             return 0

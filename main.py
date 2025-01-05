@@ -24,6 +24,7 @@ def setup_logging():
 def normalize_path(path):
     return os.path.normpath(path).replace('\\', '/')
 
+
 def main():
     setup_logging()
     logger = logging.getLogger(__name__)
