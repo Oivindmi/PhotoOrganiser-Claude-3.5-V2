@@ -1,3 +1,4 @@
+from app.utils.image_cache import LRUCache
 import os
 import hashlib
 import logging
@@ -7,11 +8,12 @@ import numpy as np
 class FileScanner:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.photo_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif', '.raw', '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.srw'}
+        self.photo_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif'}
         self.video_extensions = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v', '.mpg', '.mpeg', '.3gp', '.3g2', '.mts', '.m2ts', '.ts'}
         self.allowed_extensions = self.photo_extensions.union(self.video_extensions)
         self.frames_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'video_frames')
         os.makedirs(self.frames_dir, exist_ok=True)
+        self._frame_cache = LRUCache(50)  # Cache for recently extracted frames
 
     def is_media_file(self, file_path):
         _, extension = os.path.splitext(file_path)
@@ -47,20 +49,74 @@ class FileScanner:
         unique_id = hashlib.md5(f"{file_name}_{file_size}_{parent_dir}".encode()).hexdigest()
         return unique_id
 
+    def extract_video_frames(self, video_path: str) -> list[str]:
+        if not self.is_video(video_path):
+            return []
+
+        video_hash = hashlib.md5(video_path.encode()).hexdigest()
+        frame_dir = os.path.join(self.frames_dir, video_hash)
+
+        # Check cache first
+        cached_frames = self._frame_cache.get(video_hash)
+        if cached_frames and all(os.path.exists(f) for f in cached_frames):
+            return cached_frames
+
+        os.makedirs(frame_dir, exist_ok=True)
+
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return []
+
+            frames_data = []
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            duration = total_frames / fps if fps > 0 else 0
+
+            if duration <= 0:
+                return []
+
+            # Extract only 3 frames instead of 5
+            time_positions = [0, duration * 0.5, max(0, duration - 1)]
+
+            for idx, pos in enumerate(time_positions):
+                cap.set(cv2.CAP_PROP_POS_MSEC, pos * 1000)
+                ret, frame = cap.read()
+                if ret:
+                    frame = cv2.resize(frame, (200, 200))  # Resize immediately
+                    frame_path = os.path.join(frame_dir, f"frame_{idx}.jpg")
+                    cv2.imwrite(frame_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    frames_data.append(frame_path)
+
+            if frames_data:
+                self._frame_cache.put(video_hash, frames_data)
+
+            return frames_data
+
+        except Exception as e:
+            self.logger.error(f"Error extracting frames from {video_path}: {str(e)}")
+            return []
+
+        finally:
+            if 'cap' in locals():
+                cap.release()
+
     def clean_old_frames(self):
-        """Remove frame files that are no longer referenced in the database"""
         if not os.path.exists(self.frames_dir):
             return
 
         try:
-            # This would need database access to check which frames are still needed
-            # For now, we'll keep all frames
-            pass
+            self._frame_cache.clear()
+            for frame_dir in os.listdir(self.frames_dir):
+                full_path = os.path.join(self.frames_dir, frame_dir)
+                if os.path.isdir(full_path):
+                    for frame_file in os.listdir(full_path):
+                        os.remove(os.path.join(full_path, frame_file))
+                    os.rmdir(full_path)
         except Exception as e:
             self.logger.error(f"Error cleaning old frames: {str(e)}")
 
     def verify_video_frames(self, frame_paths: list[str]) -> list[str]:
-        """Verify frames exist and return only valid paths"""
         if not frame_paths:
             return []
 
@@ -72,66 +128,3 @@ class FileScanner:
                 self.logger.warning(f"Missing video frame: {path}")
 
         return valid_frames
-
-    def extract_video_frames(self, video_path: str) -> list[str]:
-        if not self.is_video(video_path):
-            return []
-
-        video_hash = hashlib.md5(video_path.encode()).hexdigest()
-        frame_dir = os.path.join(self.frames_dir, video_hash)
-        os.makedirs(frame_dir, exist_ok=True)
-
-        try:
-            # Handle Unicode paths for video
-            stream = open(video_path, 'rb')
-            bytes_array = bytes(stream.read())
-            numpy_array = np.asarray(bytearray(bytes_array), dtype=np.uint8)
-            cap = cv2.VideoCapture()
-            cap.open(video_path)
-
-            if not cap.isOpened():
-                self.logger.error(f"Could not open video: {video_path}")
-                return []
-
-            frames_data = []
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            duration = total_frames / fps if fps > 0 else 0
-
-            if duration <= 0:
-                self.logger.error(f"Invalid duration for video: {video_path}")
-                return []
-
-            time_positions = [
-                0,
-                duration * 0.25,
-                duration * 0.50,
-                duration * 0.75,
-                max(0, duration - 1)
-            ]
-
-            for idx, pos in enumerate(time_positions):
-                cap.set(cv2.CAP_PROP_POS_MSEC, pos * 1000)
-                ret, frame = cap.read()
-                if ret:
-                    frame_path = os.path.join(frame_dir, f"frame_{idx}.jpg")
-                    # Use imencode/imdecode for saving
-                    _, buf = cv2.imencode('.jpg', frame)
-                    with open(frame_path, 'wb') as f:
-                        f.write(buf)
-                    frames_data.append(frame_path)
-                    self.logger.info(f"Extracted frame {idx} at {pos:.2f}s from {video_path}")
-                else:
-                    self.logger.warning(f"Failed to read frame at {pos:.2f}s from {video_path}")
-
-            return frames_data
-
-        except Exception as e:
-            self.logger.error(f"Error extracting frames from {video_path}: {str(e)}")
-            return []
-
-        finally:
-            if 'cap' in locals():
-                cap.release()
-            if 'stream' in locals():
-                stream.close()
