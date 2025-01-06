@@ -75,6 +75,7 @@ def main():
     db_manager.add_file_metadata_bulk(filtered_metadata)
     logger.info(f"Database operations took: {time.time() - db_start:.2f} seconds")
 
+
     # Grouping
     group_start = time.time()
     file_grouper = FileGrouper(db_manager)
