@@ -9,8 +9,9 @@ from dateutil import parser
 import re
 
 class MetadataExtractor:
-    def __init__(self):
+    def __init__(self, file_scanner):
         self.logger = logging.getLogger(__name__)
+        self.file_scanner = file_scanner
 
     @staticmethod
     def create_arg_file(file_paths):
@@ -92,11 +93,18 @@ class MetadataExtractor:
             else:
                 camera_info = "Unknown"
 
+            is_video = self.file_scanner.is_video(file_path)
+            video_frames = None
+            if is_video:
+                video_frames = self.file_scanner.extract_video_frames(file_path)
+
             file_metadata = {
                 'file_path': file_path,
-                'file_info': None,  # To be filled by the caller
+                'file_info': None,
                 'camera_model': camera_info,
                 'file_size': os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0,
+                'is_video': is_video,
+                'video_frames': video_frames,
             }
 
             extra_metadata = {}
@@ -109,10 +117,11 @@ class MetadataExtractor:
             file_metadata['extra_metadata'] = extra_metadata
             relevant_metadata.append(file_metadata)
 
-        self.logger.info(f"Extracted metadata for {len(relevant_metadata)} files")
-        if len(relevant_metadata) > 0:
-            self.logger.debug(f"Sample metadata: {relevant_metadata[0]}")
         return relevant_metadata
+
+    def _is_video(self, file_path: str) -> bool:
+        _, ext = os.path.splitext(file_path)
+        return ext.lower() in {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v', '.mpg', '.mpeg'}
 
     def _clean_date_string(self, date_string):
         if not isinstance(date_string, str):

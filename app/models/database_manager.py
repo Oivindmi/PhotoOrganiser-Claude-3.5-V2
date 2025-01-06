@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, JSON, DateTime, Table, MetaData, text, inspect
+from sqlalchemy import create_engine, Column, Integer, String, Float, JSON, DateTime, Table, MetaData, text, inspect, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import logging
@@ -18,7 +18,9 @@ class FileMetadata(Base):
     correct_time = Column(DateTime)
     original_time_field = Column(String)
     group_id = Column(Integer)
-    group_key = Column(String)  # New column for storing the group key
+    group_key = Column(String)
+    video_frames = Column(JSON)
+    is_video = Column(Boolean, default=False)
 
 
 class DatabaseManager:
@@ -59,7 +61,9 @@ class DatabaseManager:
                     correct_time=item.get('correct_time'),
                     original_time_field=item.get('original_time_field', ''),
                     group_id=item.get('group_id'),
-                    group_key=item.get('group_key')
+                    group_key=item.get('group_key'),
+                    is_video=item.get('is_video', False),
+                    video_frames=item.get('video_frames')
                 )
                 session.merge(file_metadata)
             session.commit()

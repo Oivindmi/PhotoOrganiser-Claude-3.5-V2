@@ -330,8 +330,16 @@ class TimeSynchronizer(QObject):
                     for compare_id in relevant_compare_ids:
                         if compare_id in compare_files:
                             compare_file = compare_files[compare_id]
-                            image_pairs.append(((base_file.file_path, compare_file.file_path),
-                                                (base_file, compare_file)))
+                            # Handle both regular files and videos
+                            base_paths = base_file.video_frames if base_file.is_video else [base_file.file_path]
+                            compare_paths = compare_file.video_frames if compare_file.is_video else [
+                                compare_file.file_path]
+
+                            # Create all possible pairs of paths
+                            for base_path in base_paths:
+                                for compare_path in compare_paths:
+                                    image_pairs.append(((base_path, compare_path),
+                                                        (base_file, compare_file)))
 
         if not image_pairs:
             return []

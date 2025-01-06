@@ -2,11 +2,13 @@ import cv2
 import numpy as np
 import os
 import logging
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-import multiprocessing
-import pickle
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple, Optional, Dict
 import json
+import pickle
+from app.models.database_manager import FileMetadata
+from app.utils.image_cache import LRUCache
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +101,46 @@ class ImageCache:
 
 
 class ImageComparison:
-    _cache = ImageCache()
+    _cache = None  # Remove ImageCache reference since we're using LRUCache now
     TARGET_SIZE = (200, 200)
     BATCH_SIZE = 128
     MIN_GPU_MEM_REQUIRED = 1024 * 1024 * 1024  # 1GB
+    _db_manager = None
+    _image_cache = LRUCache(100)  # Cache last 100 images
+    _NUM_THREADS = 4  # Adjust based on CPU cores
 
-    has_cuda = False
-    device = None
-    gpu_mem_available = 0
+    # Add database manager as class variable
+    _db_manager = None
+
+    @classmethod
+    def set_db_manager(cls, db_manager):
+        cls._db_manager = db_manager
+
+    @classmethod
+    def _compare_pair(cls, pair: Tuple[str, str]) -> float:
+        try:
+            img1 = cls._load_cached_image(pair[0])
+            img2 = cls._load_cached_image(pair[1])
+
+            if img1 is None or img2 is None:
+                return 0.0
+
+            return cls._compare_images_gpu(img1, img2)
+        except Exception as e:
+            logging.error(f"Error comparing pair {pair}: {str(e)}")
+            return 0.0
+
+    @classmethod
+    def _load_cached_image(cls, path: str) -> Optional[np.ndarray]:
+        img = cls._image_cache.get(path)
+        if img is not None:
+            return img
+
+        img = cls._load_image(path)
+        if img is not None:
+            cls._image_cache.put(path, img)
+        return img
+
 
     @classmethod
     def init_gpu(cls) -> None:
@@ -197,70 +231,97 @@ class ImageComparison:
         if not file_pairs:
             return []
 
+        start_time = time.time()
+        logging.info(f"Starting comparison of {len(file_pairs)} pairs")
+
         results = []
         batch_size = cls.BATCH_SIZE
         num_batches = (len(file_pairs) + batch_size - 1) // batch_size
 
-        try:
-            if cls.has_cuda and cls.can_use_gpu(cls.TARGET_SIZE):
-                logging.info(f"Using GPU for batch processing with {batch_size} pairs per batch")
-                gpu_pairs = []
-                gpu_imgs = {}  # Cache for loaded images
+        for i in range(num_batches):
+            batch_start = time.time()
+            start_idx = i * batch_size
+            end_idx = min(start_idx + batch_size, len(file_pairs))
+            batch_pairs = file_pairs[start_idx:end_idx]
 
-                for i in range(num_batches):
-                    start_idx = i * batch_size
-                    end_idx = min(start_idx + batch_size, len(file_pairs))
-                    batch_pairs = file_pairs[start_idx:end_idx]
-                    batch_results = []
+            with ThreadPoolExecutor(max_workers=cls._NUM_THREADS) as executor:
+                batch_results = list(executor.map(cls._compare_pair, batch_pairs))
+                results.extend(batch_results)
 
-                    try:
-                        for pair in batch_pairs:
-                            img_a = cls._load_and_cache_image(pair[0], gpu_imgs)
-                            img_b = cls._load_and_cache_image(pair[1], gpu_imgs)
+            logging.info(f"Batch {i + 1}/{num_batches} took: {time.time() - batch_start:.2f} seconds")
 
-                            if img_a is None or img_b is None:
-                                batch_results.append(0.0)
-                                continue
-
-                            try:
-                                similarity = cls._compare_images_gpu(img_a, img_b)
-                                batch_results.append(similarity)
-                            except cv2.error as e:
-                                logging.warning(f"GPU comparison failed, falling back to CPU: {str(e)}")
-                                similarity = cls._compare_images_cpu(img_a.download(), img_b.download())
-                                batch_results.append(similarity)
-
-                    except Exception as e:
-                        logging.error(f"Error processing batch {i}: {str(e)}")
-                        # Fall back to CPU for this batch
-                        batch_results.extend(cls._process_batch_cpu(batch_pairs))
-
-                    results.extend(batch_results)
-
-                # Cleanup GPU resources
-                for img in gpu_imgs.values():
-                    img.release()
-
-            else:
-                logging.info("Using CPU for batch processing")
-                with ThreadPoolExecutor() as executor:
-                    futures = []
-                    for i in range(num_batches):
-                        start_idx = i * batch_size
-                        end_idx = min(start_idx + batch_size, len(file_pairs))
-                        batch_pairs = file_pairs[start_idx:end_idx]
-                        futures.append(executor.submit(cls._process_batch_cpu, batch_pairs))
-
-                    for future in futures:
-                        results.extend(future.result())
-
-        except Exception as e:
-            logging.error(f"Error in batch processing: {str(e)}")
-            # Fall back to simple sequential CPU processing
-            return [cls._compare_images_cpu(cls._load_image(p[0]), cls._load_image(p[1]))
-                    for p in file_pairs]
-
+        logging.info(f"Total comparison time: {time.time() - start_time:.2f} seconds")
         return results
+
+    @classmethod
+    def _compare_frames(cls, frames1: List[str], frames2: List[str]) -> float:
+        start_time = time.time()
+        max_similarity = 0.0
+        loaded_frames = {}  # Cache for loaded frames
+
+        # Load first frame of each list
+        try:
+            first1 = cls._load_and_cache_frame(frames1[0], loaded_frames)
+            first2 = cls._load_and_cache_frame(frames2[0], loaded_frames)
+            if first1 is not None and first2 is not None:
+                similarity = cls._compare_images_gpu(first1, first2)
+                if similarity > 0.8:  # Early exit on good match
+                    return similarity
+                max_similarity = max(max_similarity, similarity)
+        except Exception as e:
+            logging.error(f"Error comparing first frames: {str(e)}")
+
+        # Only continue if first comparison wasn't good enough
+        for frame1_path in frames1[1:]:
+            frame1 = cls._load_and_cache_frame(frame1_path, loaded_frames)
+            if frame1 is None:
+                continue
+
+            for frame2_path in frames2[1:]:
+                frame2 = cls._load_and_cache_frame(frame2_path, loaded_frames)
+                if frame2 is None:
+                    continue
+
+                try:
+                    similarity = cls._compare_images_gpu(frame1, frame2)
+                    max_similarity = max(max_similarity, similarity)
+
+                    if max_similarity > 0.8:  # Early exit on good match
+                        return max_similarity
+                except Exception as e:
+                    logging.error(f"Error comparing frames {frame1_path} and {frame2_path}: {str(e)}")
+
+        logging.info(f"Frame comparison took: {time.time() - start_time:.2f} seconds")
+        return max_similarity
+    @classmethod
+    def _compare_with_video(cls, file1: FileMetadata, file2: FileMetadata) -> float:
+        if file1.is_video and file2.is_video:
+            return cls._compare_videos(file1.video_frames, file2.video_frames)
+        elif file1.is_video:
+            return cls._compare_video_with_image(file1.video_frames, file2.file_path)
+        else:
+            return cls._compare_video_with_image(file2.video_frames, file1.file_path)
+
+    @classmethod
+    def _load_and_cache_frame(cls, frame_path: str, cache: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+        if frame_path not in cache:
+            frame = cls._load_image(frame_path)
+            if frame is not None:
+                cache[frame_path] = frame
+        return cache.get(frame_path)
+
+    @classmethod
+    def _compare_video_with_image(cls, video_frames: List[str], image_path: str) -> float:
+        max_similarity = 0.0
+
+        for frame in video_frames:
+            similarity = cls._compare_images_gpu(frame, image_path)
+            max_similarity = max(max_similarity, similarity)
+
+            if max_similarity > 0.8:  # Early exit if we find a very good match
+                return max_similarity
+
+        return max_similarity
 
     @classmethod
     def _load_and_cache_image(cls, path: str, cache: Dict[str, cv2.cuda_GpuMat]) -> Optional[cv2.cuda_GpuMat]:
@@ -365,19 +426,37 @@ class ImageComparison:
         return results
     """
 
-    @staticmethod
-    def _load_image(file_path: str) -> Optional[np.ndarray]:
+    @classmethod
+    def _load_image(cls, file_path: str) -> Optional[np.ndarray]:
         try:
-            # Read image file into a byte array
-            with open(file_path, 'rb') as f:
-                byte_array = bytearray(f.read())
-                img_array = np.asarray(byte_array, dtype=np.uint8)
-                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
-            if img is None:
-                logging.warning(f"Failed to load image: {file_path}")
+            if not os.path.exists(file_path):
+                logging.warning(f"File does not exist: {file_path}")
                 return None
-            return cv2.resize(img, ImageComparison.TARGET_SIZE)
+
+            # Normalize path to handle potential issues
+            file_path = os.path.normpath(file_path)
+
+            # Always use binary reading for better compatibility
+            with open(file_path, 'rb') as f:
+                file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+                if img is None:
+                    logging.warning(f"Failed to decode image: {file_path}")
+                    return None
+
+                try:
+                    return cv2.resize(img, cls.TARGET_SIZE)
+                except Exception as resize_error:
+                    logging.error(f"Error resizing image {file_path}: {str(resize_error)}")
+                    return None
+
+        except PermissionError:
+            logging.error(f"Permission denied accessing file: {file_path}")
+            return None
+        except IOError as io_error:
+            logging.error(f"IO Error reading file {file_path}: {str(io_error)}")
+            return None
         except Exception as e:
             logging.error(f"Error loading image {file_path}: {str(e)}")
             return None
@@ -403,48 +482,79 @@ class ImageComparison:
             return 0.0
 
     @classmethod
-    def _compare_images_gpu(cls, img1: cv2.cuda_GpuMat, img2: cv2.cuda_GpuMat) -> float:
+    def _compare_images_gpu(cls, img1: np.ndarray | str, img2: np.ndarray | str) -> float:
         try:
-            # Convert to grayscale on GPU
-            gray1 = cv2.cuda.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-            gray2 = cv2.cuda.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+            # Load images if paths are provided
+            if isinstance(img1, str):
+                img1 = cls._load_image(img1)
+            if isinstance(img2, str):
+                img2 = cls._load_image(img2)
 
-            # Download for histogram comparison - this must be done on CPU
-            cpu_gray1 = gray1.download()
-            cpu_gray2 = gray2.download()
+            if img1 is None or img2 is None:
+                return 0.0
 
-            # Calculate histograms on CPU
-            hist1 = cv2.calcHist([cpu_gray1], [0], None, [256], [0, 256])
-            hist2 = cv2.calcHist([cpu_gray2], [0], None, [256], [0, 256])
+            if cls.has_cuda and cls.can_use_gpu(img1.shape[:2]):
+                try:
+                    # Upload to GPU
+                    gpu_img1 = cv2.cuda_GpuMat()
+                    gpu_img2 = cv2.cuda_GpuMat()
+                    gpu_img1.upload(img1)
+                    gpu_img2.upload(img2)
 
-            # Normalize histograms
-            cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
-            cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
+                    # Convert to grayscale on GPU
+                    gray1 = cv2.cuda.cvtColor(gpu_img1, cv2.COLOR_BGR2GRAY)
+                    gray2 = cv2.cuda.cvtColor(gpu_img2, cv2.COLOR_BGR2GRAY)
 
-            hist_sim = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+                    # Download for histogram comparison
+                    cpu_gray1 = gray1.download()
+                    cpu_gray2 = gray2.download()
+
+                    # Calculate histograms
+                    hist_sim = cls._histogram_similarity_cpu(cpu_gray1, cpu_gray2)
+
+                    if hist_sim > 0.5:
+                        feature_sim = cls._feature_similarity_cpu(cpu_gray1, cpu_gray2)
+                        similarity = 0.6 * hist_sim + 0.4 * feature_sim
+                    else:
+                        similarity = hist_sim
+
+                    # Cleanup GPU memory
+                    gpu_img1.release()
+                    gpu_img2.release()
+                    gray1.release()
+                    gray2.release()
+
+                    return similarity
+
+                except cv2.error as e:
+                    logging.error(f"GPU processing error: {str(e)}, falling back to CPU")
+                    return cls._compare_images_cpu(img1, img2)
+            else:
+                return cls._compare_images_cpu(img1, img2)
+
+        except Exception as e:
+            logging.error(f"Error comparing images: {str(e)}")
+            return 0.0
+
+    @classmethod
+    def _compare_images_cpu(cls, img1: np.ndarray, img2: np.ndarray) -> float:
+        try:
+            # Convert to grayscale
+            gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+            gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+            # Calculate histogram similarity
+            hist_sim = cls._histogram_similarity_cpu(gray1, gray2)
 
             if hist_sim > 0.5:
-                # Use feature matching for more accurate comparison
-                feature_sim = cls._feature_similarity_gpu(gray1, gray2)
+                feature_sim = cls._feature_similarity_cpu(gray1, gray2)
                 return 0.6 * hist_sim + 0.4 * feature_sim
 
             return hist_sim
 
-        except cv2.error as e:
-            logging.error(f"GPU processing error: {str(e)}, falling back to CPU")
-            return cls._compare_images_cpu(img1.download(), img2.download())
-
-    @staticmethod
-    def _compare_images_cpu(img1: np.ndarray, img2: np.ndarray) -> float:
-        hist_sim = ImageComparison._histogram_similarity_cpu(img1, img2)
-
-        if hist_sim > 0.5:
-            gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-            gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-            feature_sim = ImageComparison._feature_similarity_cpu(gray1, gray2)
-            return 0.6 * hist_sim + 0.4 * feature_sim
-
-        return hist_sim
+        except Exception as e:
+            logging.error(f"Error in CPU comparison: {str(e)}")
+            return 0.0
 
     @classmethod
     def _feature_similarity_gpu(cls, gray1: cv2.cuda_GpuMat, gray2: cv2.cuda_GpuMat) -> float:
@@ -496,11 +606,24 @@ class ImageComparison:
             logging.warning(f"Histogram comparison failed: {str(e)}")
             return 0.0
 
-    @staticmethod
-    def _histogram_similarity_cpu(img1: np.ndarray, img2: np.ndarray) -> float:
-        hist1 = cv2.calcHist([img1], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-        hist2 = cv2.calcHist([img2], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-        return cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+    @classmethod
+    def _histogram_similarity_cpu(cls, img1: np.ndarray, img2: np.ndarray) -> float:
+        try:
+            # Calculate histograms for single-channel (grayscale) images
+            hist1 = cv2.calcHist([img1], [0], None, [256], [0, 256])
+            hist2 = cv2.calcHist([img2], [0], None, [256], [0, 256])
+
+            # Normalize the histograms
+            cv2.normalize(hist1, hist1, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+            cv2.normalize(hist2, hist2, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+            # Compare histograms
+            similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+            return max(0.0, float(similarity))  # Ensure non-negative result
+
+        except Exception as e:
+            logging.error(f"Error calculating histogram similarity: {str(e)}")
+            return 0.0
 
     @staticmethod
     def _feature_similarity_cpu(gray1: np.ndarray, gray2: np.ndarray) -> float:
@@ -521,5 +644,5 @@ class ImageComparison:
 
 
 # Initialize GPU on module import
-print("Available methods:", [method for method in dir(ImageComparison) if not method.startswith('_')])
+# print("Available methods:", [method for method in dir(ImageComparison) if not method.startswith('_')])
 ImageComparison.init_gpu()
