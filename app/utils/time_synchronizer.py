@@ -293,12 +293,12 @@ class TimeSynchronizer(QObject):
                 file.correct_time += time_delta
                 logger.info(f"Applied time delta to file {file.file_path}: new correct_time = {file.correct_time}")
 
-    def find_best_matches_across_windows(self, session, base_group_id, compare_group_id,
-                                         base_time_windows, compare_time_windows):
+    def find_best_matches_across_windows(self, session, base_group_id, compare_group_id, base_time_windows,
+                                         compare_time_windows):
         all_matches = []
+        image_pairs = []
         base_files = {}
         compare_files = {}
-        image_pairs = []
 
         # Get all base files
         base_file_ids = [id for window_files in base_time_windows.values() for id in window_files]
@@ -314,7 +314,6 @@ class TimeSynchronizer(QObject):
         ).all()
         compare_files = {f.id: f for f in compare_query}
 
-        # Create pairs for parallel processing
         for base_window, base_window_ids in base_time_windows.items():
             compare_window_start = base_window - timedelta(minutes=30)
             compare_window_end = base_window + timedelta(minutes=30)
@@ -330,33 +329,30 @@ class TimeSynchronizer(QObject):
                     for compare_id in relevant_compare_ids:
                         if compare_id in compare_files:
                             compare_file = compare_files[compare_id]
-                            # Handle both regular files and videos
                             base_paths = base_file.video_frames if base_file.is_video else [base_file.file_path]
                             compare_paths = compare_file.video_frames if compare_file.is_video else [
                                 compare_file.file_path]
 
-                            # Create all possible pairs of paths
                             for base_path in base_paths:
                                 for compare_path in compare_paths:
-                                    image_pairs.append(((base_path, compare_path),
-                                                        (base_file, compare_file)))
+                                    if base_path and compare_path:
+                                        image_pairs.append((base_path, compare_path))
 
-        if not image_pairs:
-            return []
+        if image_pairs:
+            similarities = ImageComparison.batch_compare_media(image_pairs)
+            pairs_with_similarity = zip(image_pairs, similarities)
+            for (base_path, compare_path), similarity in pairs_with_similarity:
+                if similarity >= self.similarity_threshold:
+                    # Find corresponding files for the paths
+                    base_file = next((f for f in base_files.values()
+                                      if base_path in ([f.file_path] if not f.is_video else f.video_frames)), None)
+                    compare_file = next((f for f in compare_files.values()
+                                         if compare_path in ([f.file_path] if not f.is_video else f.video_frames)),
+                                        None)
+                    if base_file and compare_file:
+                        all_matches.append((base_file, compare_file, similarity))
 
-        # Split the pairs
-        file_pairs, file_objects = zip(*image_pairs)
-
-        # Process all comparisons in parallel
-        similarities = ImageComparison.batch_compare_media(file_pairs)
-
-        # Create match tuples with similarity scores
-        for (base_file, compare_file), similarity in zip(file_objects, similarities):
-            if similarity >= self.similarity_threshold:
-                all_matches.append((base_file, compare_file, similarity))
-
-        all_matches.sort(key=lambda x: x[2], reverse=True)
-        return all_matches[:5]
+        return sorted(all_matches, key=lambda x: x[2], reverse=True)[:5]
 
     def find_best_matches(self, base_files, compare_files):
         matches = []

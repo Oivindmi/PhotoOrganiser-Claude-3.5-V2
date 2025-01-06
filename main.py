@@ -23,7 +23,12 @@ def setup_logging():
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
-
+def setup_processing():
+    logger = logging.getLogger(__name__)
+    ImageComparison.init_gpu()
+    optimal_threads = ImageComparison.calculate_optimal_threads()
+    optimal_batch = ImageComparison.calculate_optimal_batch_size()
+    logger.info(f"Initialized processing with {optimal_threads} threads and batch size {optimal_batch}")
 def normalize_path(path):
     return os.path.normpath(path).replace('\\', '/')
 
@@ -31,6 +36,7 @@ def normalize_path(path):
 def main():
     total_start = time.time()
     setup_logging()
+    setup_processing()
     logger = logging.getLogger(__name__)
 
     logger.info("Starting photo organizer")

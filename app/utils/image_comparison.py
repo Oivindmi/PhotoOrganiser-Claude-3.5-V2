@@ -5,15 +5,13 @@ import numpy as np
 from typing import List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.utils.image_cache import LRUCache
+import psutil
 
 
 class ImageComparison:
     _cache = None
-    TARGET_SIZE = (100, 100)  # Reduced from 200x200
-    BATCH_SIZE = 256  # Increased from 128
-    MIN_GPU_MEM_REQUIRED = 512 * 1024 * 1024  # Reduced to 512MB
-    _NUM_THREADS = min(16, os.cpu_count() * 2)  # More aggressive threading
-    _image_cache = LRUCache(200)  # Doubled cache size
+    TARGET_SIZE = (100, 100)
+    _image_cache = LRUCache(200)
     _db_manager = None
     has_cuda = False
 
@@ -35,6 +33,31 @@ class ImageComparison:
         cls._db_manager = db_manager
 
     @classmethod
+    def calculate_optimal_batch_size(cls) -> int:
+        try:
+            memory = psutil.virtual_memory()
+            available_memory = memory.available
+            image_size = cls.TARGET_SIZE[0] * cls.TARGET_SIZE[1] * 3
+            batch_overhead = 1.5
+            optimal_size = int((available_memory * 0.2) / (image_size * batch_overhead))
+            return max(64, min(512, optimal_size))
+        except Exception:
+            return 256
+
+    @classmethod
+    def calculate_optimal_threads(cls) -> int:
+        try:
+            cpu_count = os.cpu_count()
+            if cls.has_cuda:
+                return min(8, cpu_count)
+            memory = psutil.virtual_memory()
+            if memory.percent > 80:
+                return max(2, cpu_count // 2)
+            return min(16, cpu_count * 2)
+        except Exception:
+            return 8
+
+    @classmethod
     def _compare_images_gpu(cls, img1: np.ndarray | str, img2: np.ndarray | str) -> float:
         try:
             if isinstance(img1, str):
@@ -50,14 +73,12 @@ class ImageComparison:
                     gpu_img1 = cv2.cuda_GpuMat()
                     gpu_img2 = cv2.cuda_GpuMat()
 
-                    # Convert to grayscale before upload
                     gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
                     gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
 
                     gpu_img1.upload(gray1)
                     gpu_img2.upload(gray2)
 
-                    # Calculate histogram similarity
                     hist_sim = cls._histogram_similarity_gpu(gpu_img1, gpu_img2)
 
                     if hist_sim > 0.5:
@@ -108,21 +129,38 @@ class ImageComparison:
         if not file_pairs:
             return []
 
-        with ThreadPoolExecutor(max_workers=cls._NUM_THREADS) as executor:
+        batch_size = cls.calculate_optimal_batch_size()
+        thread_count = cls.calculate_optimal_threads()
+
+        results = [0.0] * len(file_pairs)
+        batches: List[List[Tuple[int, Tuple[str, str]]]] = []
+
+        for i in range(0, len(file_pairs), batch_size):
+            batch = [(idx, pair) for idx, pair in enumerate(file_pairs[i:i + batch_size])]
+            batches.append(batch)
+
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
             futures = []
-            for i in range(0, len(file_pairs), cls.BATCH_SIZE):
-                batch = file_pairs[i:i + cls.BATCH_SIZE]
+            for batch in batches:
                 futures.append(executor.submit(cls._process_batch, batch))
 
-            results = []
             for future in as_completed(futures):
-                results.extend(future.result())
+                for idx, similarity in future.result():
+                    results[idx] = similarity
 
         return results
 
     @classmethod
-    def _process_batch(cls, batch_pairs: List[Tuple[str, str]]) -> List[float]:
-        return [cls._compare_images_gpu(pair[0], pair[1]) for pair in batch_pairs]
+    def _process_batch(cls, batch: List[Tuple[int, Tuple[str, str]]]) -> List[Tuple[int, float]]:
+        batch_results = []
+        for idx, (file1, file2) in batch:
+            try:
+                similarity = cls._compare_images_gpu(file1, file2)
+                batch_results.append((idx, similarity))
+            except Exception as e:
+                logging.error(f"Batch processing error: {str(e)}")
+                batch_results.append((idx, 0.0))
+        return batch_results
 
     @classmethod
     def _compare_images_cpu(cls, img1: np.ndarray, img2: np.ndarray) -> float:
@@ -197,5 +235,4 @@ class ImageComparison:
             return 0.0
 
 
-# Initialize GPU on module import
 ImageComparison.init_gpu()
