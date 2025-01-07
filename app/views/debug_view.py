@@ -12,10 +12,22 @@ class QTextEditLogger(logging.Handler):
         super().__init__()
         self.widget = parent
         self.widget.setReadOnly(True)
+        self.level = logging.INFO
+        self.log_records = []  # Store all records
 
     def emit(self, record):
-        msg = self.format(record)
-        self.widget.append(msg)
+        self.log_records.append(record)
+        if record.levelno >= self.level:
+            msg = self.format(record)
+            self.widget.append(msg)
+
+    def setLevel(self, level):
+        self.level = level
+        self.widget.clear()
+        for record in self.log_records:
+            if record.levelno >= level:
+                msg = self.format(record)
+                self.widget.append(msg)
 
 
 class DebugView(QWidget):

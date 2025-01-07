@@ -70,11 +70,12 @@ class TimeSynchronizer(QObject):
 
             dialog = SynchronizationDialog(self.main_window)
 
-            for base_file, compare_file, similarity in best_matches:
+            for base_file, compare_file, similarity, matching_base_path, matching_compare_path in best_matches:
                 try:
                     logger.info(f"Processing match: {base_file.file_path} with {compare_file.file_path}")
+                    logger.info(f"Using matching frames/paths: {matching_base_path} - {matching_compare_path}")
 
-                    dialog.set_images(base_file.file_path, compare_file.file_path)
+                    dialog.set_images(matching_base_path, matching_compare_path)
                     logger.info("Images set in dialog")
 
                     base_evaluated = base_group_id in self.evaluated_groups
@@ -85,7 +86,6 @@ class TimeSynchronizer(QObject):
                     compare_field = compare_file.original_time_field if compare_evaluated else None
                     logger.info(f"Time fields - Base: {base_field}, Compare: {compare_field}")
 
-                    # Log metadata before setting
                     logger.info(f"Base metadata: {base_file.extra_metadata}")
                     logger.info(f"Compare metadata: {compare_file.extra_metadata}")
                     logger.info(f"Base correct_time: {base_file.correct_time}")
@@ -107,8 +107,6 @@ class TimeSynchronizer(QObject):
                         logger.error(f"Error setting metadata: {str(e)}")
                         raise
 
-                    # dialog.set_group_info(f"Group {base_group_key} (ID: {base_group_id})",
-                    #                      f"Group {compare_group_key} (ID: {compare_group_id})")
                     logger.info("Group info set in dialog")
 
                     dialog.set_file_names(os.path.basename(base_file.file_path),
@@ -300,14 +298,12 @@ class TimeSynchronizer(QObject):
         base_files = {}
         compare_files = {}
 
-        # Get all base files
         base_file_ids = [id for window_files in base_time_windows.values() for id in window_files]
         base_query = session.query(self.db_manager.FileMetadata).filter(
             self.db_manager.FileMetadata.id.in_(base_file_ids)
         ).all()
         base_files = {f.id: f for f in base_query}
 
-        # Get all compare files
         compare_file_ids = [id for window_files in compare_time_windows.values() for id in window_files]
         compare_query = session.query(self.db_manager.FileMetadata).filter(
             self.db_manager.FileMetadata.id.in_(compare_file_ids)
@@ -343,14 +339,13 @@ class TimeSynchronizer(QObject):
             pairs_with_similarity = zip(image_pairs, similarities)
             for (base_path, compare_path), similarity in pairs_with_similarity:
                 if similarity >= self.similarity_threshold:
-                    # Find corresponding files for the paths
                     base_file = next((f for f in base_files.values()
                                       if base_path in ([f.file_path] if not f.is_video else f.video_frames)), None)
                     compare_file = next((f for f in compare_files.values()
                                          if compare_path in ([f.file_path] if not f.is_video else f.video_frames)),
                                         None)
                     if base_file and compare_file:
-                        all_matches.append((base_file, compare_file, similarity))
+                        all_matches.append((base_file, compare_file, similarity, base_path, compare_path))
 
         return sorted(all_matches, key=lambda x: x[2], reverse=True)[:5]
 

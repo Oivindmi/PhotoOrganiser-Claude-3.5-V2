@@ -72,7 +72,7 @@ class DatabaseView(QWidget):
                 # Updated Time column
                 updated_time = str(item.correct_time) if item.correct_time else ""
                 self.table.setItem(row, 6, QTableWidgetItem(updated_time))
-                self.logger.info(
+                self.logger.debug(
                     f"Setting Updated Time for {file_name}: '{updated_time}', raw value: {item.correct_time}")
 
                 # Original Time Field column

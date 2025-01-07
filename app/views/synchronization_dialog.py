@@ -1,10 +1,11 @@
 import logging
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-                             QMessageBox, QTableWidget, QTableWidgetItem, QAbstractItemView)
+                           QMessageBox, QTableWidget, QTableWidgetItem, QAbstractItemView)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QImage
 import json
 import cv2
+import os
 
 class SynchronizationDialog(QDialog):
     def __init__(self, parent=None):
@@ -69,34 +70,69 @@ class SynchronizationDialog(QDialog):
         self.use_right_button.clicked.connect(self.use_right)
         self.reject_button.clicked.connect(self.reject)
 
-    # OBS consider deleting and letting the smartest model deal with the missing MP4 picture
-    def set_images(self, left_path, right_path):
+    def set_images(self, left_path: str, right_path: str) -> None:
+        logging.info(f"Attempting to load images from: \nLeft: {left_path}\nRight: {right_path}")
         left_pixmap = self.load_image(left_path)
         right_pixmap = self.load_image(right_path)
 
         if left_pixmap:
-            self.left_image.setPixmap(left_pixmap.scaled(400, 300, Qt.KeepAspectRatio))
-        if right_pixmap:
-            self.right_image.setPixmap(right_pixmap.scaled(400, 300, Qt.KeepAspectRatio))
-
-    def load_image(self, path):
-        if path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif')):
-            return QPixmap(path)
+            scaled_left = left_pixmap.scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.left_image.setPixmap(scaled_left)
         else:
-            # Assume it's a video frame in numpy array format
-            frame = cv2.imread(path)
-            if frame is not None:
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                height, width, _ = rgb_frame.shape
-                qimage = QImage(rgb_frame.data, width, height, QImage.Format_RGB888)
-                return QPixmap.fromImage(qimage)
-        return None
+            self.left_image.setText("Could not load image")
 
-    """
-    def set_images(self, left_path, right_path):
-        self.left_image.setPixmap(QPixmap(left_path).scaled(400, 300, Qt.KeepAspectRatio))
-        self.right_image.setPixmap(QPixmap(right_path).scaled(400, 300, Qt.KeepAspectRatio))
-    """
+        if right_pixmap:
+            scaled_right = right_pixmap.scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.right_image.setPixmap(scaled_right)
+        else:
+            self.right_image.setText("Could not load image")
+
+    def load_image(self, path: str) -> QPixmap | None:
+        try:
+            if not os.path.exists(path):
+                logging.error(f"File does not exist: {path}")
+                return None
+
+            logging.info(f"Loading image from path: {path}")
+            file_type = path.lower().split('.')[-1] if '.' in path else 'unknown'
+            logging.info(f"File type detected: {file_type}")
+
+            if path.lower().endswith(
+                    ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif')):
+                logging.info("Loading as standard image file")
+                pixmap = QPixmap(path)
+                if pixmap.isNull():
+                    logging.error(f"Failed to load image as QPixmap: {path}")
+                    return None
+                return pixmap
+
+            # Handle video frame
+            logging.info("Loading as video frame")
+            frame = cv2.imread(path)
+            if frame is None:
+                logging.error(f"Failed to load image with OpenCV: {path}")
+                return None
+
+            logging.info(f"Frame loaded with shape: {frame.shape}")
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            height, width, channel = rgb_frame.shape
+            bytes_per_line = channel * width
+
+            qimage = QImage(rgb_frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            if qimage.isNull():
+                logging.error(f"Failed to convert frame to QImage: {path}")
+                return None
+
+            logging.info("Successfully converted frame to QImage")
+            return QPixmap.fromImage(qimage)
+
+        except Exception as e:
+            logging.error(f"Error loading image {path}: {str(e)}")
+            logging.error(f"Exception type: {type(e)}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            return None
+
     def set_file_names(self, left_name, right_name):
         self.left_name.setText(left_name)
         self.right_name.setText(right_name)
