@@ -1,9 +1,10 @@
 import logging
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                              QMessageBox, QTableWidget, QTableWidgetItem, QAbstractItemView)
-from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QImage
 import json
+import cv2
 
 class SynchronizationDialog(QDialog):
     def __init__(self, parent=None):
@@ -68,10 +69,34 @@ class SynchronizationDialog(QDialog):
         self.use_right_button.clicked.connect(self.use_right)
         self.reject_button.clicked.connect(self.reject)
 
+    # OBS consider deleting and letting the smartest model deal with the missing MP4 picture
+    def set_images(self, left_path, right_path):
+        left_pixmap = self.load_image(left_path)
+        right_pixmap = self.load_image(right_path)
+
+        if left_pixmap:
+            self.left_image.setPixmap(left_pixmap.scaled(400, 300, Qt.KeepAspectRatio))
+        if right_pixmap:
+            self.right_image.setPixmap(right_pixmap.scaled(400, 300, Qt.KeepAspectRatio))
+
+    def load_image(self, path):
+        if path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif')):
+            return QPixmap(path)
+        else:
+            # Assume it's a video frame in numpy array format
+            frame = cv2.imread(path)
+            if frame is not None:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                height, width, _ = rgb_frame.shape
+                qimage = QImage(rgb_frame.data, width, height, QImage.Format_RGB888)
+                return QPixmap.fromImage(qimage)
+        return None
+
+    """
     def set_images(self, left_path, right_path):
         self.left_image.setPixmap(QPixmap(left_path).scaled(400, 300, Qt.KeepAspectRatio))
         self.right_image.setPixmap(QPixmap(right_path).scaled(400, 300, Qt.KeepAspectRatio))
-
+    """
     def set_file_names(self, left_name, right_name):
         self.left_name.setText(left_name)
         self.right_name.setText(right_name)
